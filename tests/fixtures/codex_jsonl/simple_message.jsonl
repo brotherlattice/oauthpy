@@ -1,0 +1,3 @@
+{"type": "session.created", "id": "abc123"}
+{"type": "agent_message", "text": "Hello, world."}
+{"type": "task_complete", "message": "done"}

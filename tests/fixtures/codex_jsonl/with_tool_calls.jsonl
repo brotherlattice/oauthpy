@@ -1,0 +1,9 @@
+{"type": "session.created", "id": "tool-run"}
+{"type": "agent_reasoning", "text": "Let me look at the file first."}
+{"type": "plan_update", "text": "1. Read file 2. Propose edit"}
+{"type": "tool_call", "name": "Read", "input": {"path": "src/app.py"}}
+{"type": "tool_call_output", "name": "Read", "output": "def foo(): pass\n"}
+{"type": "command", "command": ["pytest", "-x"]}
+{"type": "file_change", "path": "src/app.py", "edit": "..."}
+{"type": "agent_message", "content": [{"type": "text", "text": "I made the change."}]}
+{"type": "task_complete"}

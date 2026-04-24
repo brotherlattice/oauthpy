@@ -1,3 +1,19 @@
+[![PyPI - Version](https://img.shields.io/pypi/v/oauthpy)](https://pypi.org/project/oauthpy/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/oauthpy)](https://pypi.org/project/oauthpy/)
+[![PyPI - License](https://img.shields.io/pypi/l/oauthpy)](LICENSE)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/oauthpy)](https://pypistats.org/packages/oauthpy)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/oauthpy?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=all+time+downloads)](https://pepy.tech/projects/oauthpy)
+[![GitHub Actions](https://github.com/brotherlattice/oauthpy/actions/workflows/pypi-release.yml/badge.svg)](https://github.com/brotherlattice/oauthpy/actions/workflows/pypi-release.yml)
+[![Documentation Status](https://readthedocs.org/projects/oauthpy/badge/?version=latest)](https://oauthpy.readthedocs.io/en/latest/?badge=latest)
+
+## 🚧 Under Development
+
+This project is still in an **alpha stage**. Expect rapid changes, incomplete features, and possible breaking updates between releases.
+
+- The API may evolve as we stabilize core functionality.
+- Documentation and examples are incomplete.
+- Feedback and bug reports are especially valuable at this stage.
+
 # oauthpy
 
 `oauthpy` is a **local, user-operated** Python library that gives a small, typed, async-core-with-sync-facade API over two OAuth-authenticated local coding agents:

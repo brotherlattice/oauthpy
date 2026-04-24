@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from ..models import AuthStatus, Event, EventKind, ProviderName, RunResult, TransportName
+from ..models import AuthStatus, Event, EventKind, ProviderName, RunResult, TransportName, Usage
 
 
 class Provider(ABC):
@@ -82,6 +82,7 @@ class Provider(ABC):
             events=tuple(events),
             elapsed_s=elapsed,
             cwd=os.fspath(cwd) if cwd is not None else None,
+            usage=self._usage(events),
         )
 
     def _final_text(self, events: list[Event]) -> str:
@@ -92,6 +93,11 @@ class Provider(ABC):
         """
 
         return "\n".join(e.text for e in events if e.kind is EventKind.MESSAGE and e.text)
+
+    def _usage(self, events: list[Event]) -> Usage | None:
+        """Extract optional provider usage from a drained event list."""
+
+        return None
 
     async def available(self) -> bool:
         """Whether this provider is installed and authenticated.

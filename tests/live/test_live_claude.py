@@ -1,8 +1,8 @@
 """Live smoke test — requires a real Claude auth.
 
 Skipped unless ``OAUTHPY_LIVE_CLAUDE=1`` AND ``claude-agent-sdk`` is importable
-AND some form of auth is configured (``CLAUDE_CODE_OAUTH_TOKEN``,
-``ANTHROPIC_API_KEY``, or ``~/.claude.json``). Run:
+AND some form of auth is configured via ``oauthpy auth login --provider claude``,
+an existing Claude Code session, or documented Claude environment auth. Run:
 
 .. code-block:: bash
 

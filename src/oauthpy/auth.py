@@ -1,4 +1,4 @@
-"""Pluggable auth backend.
+"""Auth helpers and pluggable auth backend.
 
 The default backend delegates everything to the provider adapters, which in
 turn shell out to the upstream CLI / SDK. This module exists so a future
@@ -17,9 +17,53 @@ If state cannot be determined safely, we return ``mode="unknown"``.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from .models import AuthStatus, ProviderName
+from .models import AuthSource, AuthStatus, ProviderName
+
+_AUTH_SOURCES: tuple[AuthSource, ...] = ("auto", "oauthpy", "external")
+
+
+def normalize_auth_source(auth_source: str) -> AuthSource:
+    """Validate and normalize an auth source string."""
+
+    if auth_source not in _AUTH_SOURCES:
+        expected = ", ".join(_AUTH_SOURCES)
+        raise ValueError(f"unknown auth_source {auth_source!r}; expected one of {expected}")
+    return auth_source  # type: ignore[return-value]
+
+
+def resolve_oauthpy_home(oauthpy_home: str | os.PathLike[str] | None = None) -> Path:
+    """Resolve oauthpy's private state directory."""
+
+    raw = oauthpy_home
+    if raw is None:
+        raw = os.environ.get("OAUTHPY_HOME")
+    if raw is None:
+        return Path.home() / ".oauthpy"
+    return Path(raw).expanduser()
+
+
+def provider_state_dir(
+    provider: ProviderName,
+    oauthpy_home: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Return the oauthpy-owned state directory for one provider."""
+
+    return resolve_oauthpy_home(oauthpy_home) / provider
+
+
+def ensure_private_dir(path: Path) -> None:
+    """Create a user-private directory, best-effort on platforms without chmod."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        # Windows ACLs are inherited from the user profile; chmod is best-effort.
+        pass
 
 
 @runtime_checkable
@@ -27,8 +71,8 @@ class AuthBackend(Protocol):
     """Strategy for resolving a provider's auth state.
 
     ``status`` must be read-only — never mutate disk state.
-    ``login`` may shell out to an interactive flow but must never write tokens
-    to a location under oauthpy's control.
+    ``login`` may shell out to an interactive flow but must never read or print
+    tokens directly.
     """
 
     async def status(self, provider: ProviderName) -> AuthStatus:  # pragma: no cover - Protocol
@@ -53,4 +97,11 @@ class SubprocessAuthBackend:
         await adapter.login()  # type: ignore[attr-defined]
 
 
-__all__ = ["AuthBackend", "SubprocessAuthBackend"]
+__all__ = [
+    "AuthBackend",
+    "SubprocessAuthBackend",
+    "ensure_private_dir",
+    "normalize_auth_source",
+    "provider_state_dir",
+    "resolve_oauthpy_home",
+]

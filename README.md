@@ -21,7 +21,7 @@ This project is still in an **alpha stage**. Expect rapid changes, incomplete fe
 - **Codex** (OpenAI), driven by the official `codex` CLI via `codex exec --json`
 - **Claude Code** (Anthropic), driven by the official `claude-agent-sdk`
 
-It is not a hosted service, a multi-user gateway, or a credential broker. It runs on your machine, reuses the auth your official client already set up, and lets you script those agents from Python with a clean `Client(...)` API.
+It is not a hosted service, a multi-user gateway, or a credential broker. It runs on your machine and lets you either isolate provider login state under `~/.oauthpy/` or explicitly reuse the normal vendor CLI/session state.
 
 ## Scope
 
@@ -32,7 +32,8 @@ In scope for v0.1:
 - Best-effort, read-only `Client.auth_status()` per provider.
 - `Client.login()` that shells out to the provider's official login flow.
 - `Client.available()` installed/provider-ready check.
-- A tiny debugging CLI (`oauthpy run`, `oauthpy auth login`, `oauthpy auth status`).
+- Auth-source selection: `auto`, `oauthpy`, or `external`.
+- A tiny debugging CLI (`oauthpy run`, `oauthpy auth login`, `oauthpy auth status`, `oauthpy available`, `oauthpy chat`).
 
 Out of scope for v0.1:
 
@@ -40,7 +41,7 @@ Out of scope for v0.1:
 - Reverse-engineering vendor web endpoints.
 - Scraping TUI output.
 - Wire-compatibility with vendor cloud APIs.
-- Multi-turn session management beyond what falls out trivially.
+- Persistent multi-turn session management. `oauthpy chat` is only a local in-memory debugging facade.
 - Editing `~/.codex/auth.json` or Claude credential files directly.
 
 ## Installation
@@ -55,10 +56,18 @@ Python 3.10+. Cross-platform (Windows, Linux, macOS).
 
 ## Auth prerequisites
 
-`oauthpy` never manages OAuth tokens itself in v0.1 — it delegates to the provider's official tooling.
+`oauthpy` never implements vendor OAuth itself in v0.1. It delegates login, refresh, and credential formats to the provider's official local tooling.
 
-- **Codex** — install the `codex` CLI (`npm i -g @openai/codex`), then run `codex login` once. That writes `~/.codex/auth.json`, which the CLI owns and refreshes.
-- **Claude** — install the Claude Code CLI and/or `pip install claude-agent-sdk`. The SDK picks up auth from `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the local `~/.claude.json` login state that Claude Code already writes.
+- **Default isolated login**: `oauthpy auth login --provider codex` or `oauthpy auth login --provider claude`. This creates `~/.oauthpy/<provider>/` with private directory permissions where supported, then runs the official CLI login with provider-specific config env vars.
+- **External session reuse**: existing `codex` and `claude` logins are still reusable out of the box. The default `auth_source="auto"` prefers authenticated oauthpy-isolated state, then falls back to normal vendor CLI/session state.
+- **Forced source**: use `Client("codex", auth_source="oauthpy")` for isolated state or `Client("claude", auth_source="external")` for normal vendor behavior.
+
+Provider-specific auth isolation:
+
+- **Codex** — install the `codex` CLI (`npm i -g @openai/codex`). In `oauthpy` source mode, oauthpy sets `CODEX_HOME=~/.oauthpy/codex` and ensures `config.toml` contains `cli_auth_credentials_store = "file"` unless you already set a supported value (`file`, `keyring`, or `auto`).
+- **Claude** — install the Claude Code CLI and `claude-agent-sdk` (`pip install "oauthpy[claude]"`). In `oauthpy` source mode, oauthpy sets `CLAUDE_CONFIG_DIR=~/.oauthpy/claude` for CLI status/login and SDK runs.
+
+Normal Claude login uses `claude auth login`. `claude setup-token` is a separate headless/CI helper that prints a long-lived token; oauthpy does not use it for regular login.
 
 See `docs/auth.md` for details.
 
@@ -97,6 +106,25 @@ print(result.text)
 
 Streaming is identical: `async for event in Client("claude").stream(prompt, cwd="."): ...`.
 
+## Auth-source selection
+
+`Client(provider, auth_source="auto", oauthpy_home=None)` keeps the shared API small while making auth state explicit:
+
+| Source | Behavior |
+|--------|----------|
+| `auto` | Prefer authenticated `~/.oauthpy/<provider>/` state; otherwise reuse normal vendor CLI/session auth; if login is needed, create isolated oauthpy state. |
+| `oauthpy` | Force isolated state under `OAUTHPY_HOME` or `~/.oauthpy`. |
+| `external` | Force normal vendor behavior without oauthpy env overrides. |
+
+CLI equivalents:
+
+```bash
+oauthpy auth login --provider codex          # defaults to --source oauthpy
+oauthpy auth login --provider claude --source external
+oauthpy auth status --provider codex --source auto
+oauthpy run --provider claude --source oauthpy "summarize this repo"
+```
+
 ## Architecture note
 
 Codex and Claude Code expose very different integration surfaces on the supported, local path:
@@ -111,9 +139,13 @@ Both adapters normalize to the same `Event` / `RunResult` / `AuthStatus` models 
 `oauthpy` is designed to run **on your machine, for your account**. It:
 
 - never prints or persists OAuth tokens beyond what the upstream tool already does;
-- never edits `~/.codex/auth.json` or any Claude credential file;
+- creates `~/.oauthpy/` and provider subdirectories with `0700` permissions where the OS supports it;
+- never copies existing vendor tokens into `~/.oauthpy/` by default;
+- never edits normal vendor credential files directly;
 - passes subprocess arguments as argv lists (`shell=False` everywhere);
 - redacts secrets from logs, reprs, and exception messages on a best-effort basis.
+
+File-based OAuth credential storage is sensitive. If Codex stores credentials in `auth.json`, treat that file like a password: do not commit it, paste it into tickets, or share it. Some upstream tools may use an OS keychain depending on platform and config; oauthpy does not abstract that away.
 
 **This is not a hosted credential relay.** Do not deploy it as a gateway for other users. If you need that, build your own service on top of vendor-approved primitives.
 
@@ -123,7 +155,7 @@ The official `claude-agent-sdk` documentation states:
 
 > Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK.
 
-`oauthpy` is a local wrapper for the user's own Claude auth. It does not offer Claude.ai login to other people. If you fork this to build a third-party product that re-distributes Claude.ai access, you need to switch to API-key auth and talk to Anthropic. See `docs/limitations.md`.
+`oauthpy` is a local wrapper for the user's own Claude auth. It does not offer Claude.ai login to other people. If you fork this to build a third-party product that re-distributes Claude.ai access, you need vendor-approved authentication and policy review. See `docs/limitations.md`.
 
 ## Development
 

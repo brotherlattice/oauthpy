@@ -1,51 +1,104 @@
 # Auth
 
-`oauthpy` v0.1 does not manage OAuth tokens itself. It delegates to the upstream tool each provider ships, which already owns the interactive flow, the refresh loop, and the on-disk token file.
+`oauthpy` v0.1 does not implement vendor OAuth flows, mint tokens, refresh tokens, or copy credential files. It delegates all auth behavior to the official local tools and SDKs, then controls which provider config directory they see.
+
+## Auth Sources
+
+`Client(provider, auth_source="auto", oauthpy_home=None)` supports three sources:
+
+| Source | Meaning |
+|--------|---------|
+| `auto` | Prefer authenticated oauthpy-isolated state, then fall back to normal vendor CLI/session state. If login is needed, default to oauthpy-isolated state. |
+| `oauthpy` | Force isolated provider state under `OAUTHPY_HOME` or `~/.oauthpy`. |
+| `external` | Force normal vendor CLI/session behavior with no oauthpy config-directory override. |
+
+`OAUTHPY_HOME` defaults to `~/.oauthpy`. oauthpy creates this directory and provider subdirectories with `0700` permissions where the operating system supports POSIX modes.
+
+```
+~/.oauthpy/
+  codex/
+    config.toml
+    auth.json          # only if Codex uses file credential storage
+  claude/
+    ...                # owned by Claude Code / claude-agent-sdk
+```
+
+Do not commit, copy casually, paste, or share any file-based credential material under this tree. Treat provider credential files like passwords.
+
+## CLI
+
+```bash
+oauthpy auth login --provider codex          # isolated oauthpy source
+oauthpy auth login --provider claude         # isolated oauthpy source
+oauthpy auth login --provider claude --source external
+
+oauthpy auth status --provider codex --source auto
+oauthpy auth status --provider claude --source oauthpy
+oauthpy available --provider codex
+```
+
+`AuthStatus.details` intentionally includes only non-secret operational data such as `source`, `requested_source`, provider config path, binary path, and login-status exit code. It must not include token values.
 
 ## Codex
 
-- **Login**: run `codex login`. The CLI opens your browser, runs ChatGPT OAuth via PKCE, catches the callback on `127.0.0.1:1455`, and writes `~/.codex/auth.json`.
-- **Check status**: run `codex login status`. Exit code `0` means authenticated.
-- **Logout**: run `codex logout`. This removes the on-disk token.
-- **Environment-only alternative**: if you have an OpenAI API key and prefer key auth, `codex login --with-api-key` is the official path. API-key auth is out of scope for the v0.1 oauthpy examples but is transparently supported — the CLI does not care how you authenticated.
+`oauthpy` uses the official `codex` CLI:
 
-`oauthpy.Client("codex").auth_status()` wraps `codex login status`. It never reads `auth.json` directly.
+- Login: `codex login`
+- Status: `codex login status`
+- Runs: `codex exec --json`
 
-`oauthpy.Client("codex").login()` shells out to `codex login`.
+For `auth_source="oauthpy"`, oauthpy sets:
+
+```bash
+CODEX_HOME=$OAUTHPY_HOME/codex
+```
+
+It also ensures `CODEX_HOME/config.toml` contains:
+
+```toml
+cli_auth_credentials_store = "file"
+```
+
+If that key already exists with a supported value (`file`, `keyring`, or `auto`), oauthpy preserves it and does not overwrite unrelated config. This is intentional: Codex owns the credential format and refresh behavior.
+
+For `auth_source="external"`, oauthpy does not set `CODEX_HOME` and the normal Codex CLI config is used. For `auth_source="auto"`, oauthpy checks isolated state first if it appears to exist, then checks external status.
+
+Codex may store cached credentials in `auth.json` under `CODEX_HOME` or in the OS credential store, depending on `cli_auth_credentials_store` and platform support. If file storage is used, the file contains sensitive tokens.
 
 ## Claude
 
-`claude-agent-sdk` accepts auth from three sources, in priority order:
+`oauthpy` uses the official Claude Code CLI for auth status/login and `claude-agent-sdk` for runs:
 
-1. `CLAUDE_CODE_OAUTH_TOKEN` environment variable — a long-lived OAuth token created by `claude setup-token`. Useful for CI and headless contexts.
-2. `ANTHROPIC_API_KEY` environment variable — classic API-key auth.
-3. `~/.claude.json` login state — what `claude` / Claude Code writes when you log in interactively.
+- Login: `claude auth login`
+- Status: `claude auth status --json`
+- Runs: `claude_agent_sdk.query(..., options=ClaudeAgentOptions(...))`
 
-`oauthpy.Client("claude").auth_status()` returns `mode=...` reflecting which of those it detected:
+For `auth_source="oauthpy"`, oauthpy sets:
 
-| `mode` | Source |
-|--------|--------|
-| `env` | `CLAUDE_CODE_OAUTH_TOKEN` is set |
-| `api-key` | `ANTHROPIC_API_KEY` is set |
-| `login-state` | `~/.claude.json` exists (contents never parsed) |
-| `unknown` | None of the above |
+```bash
+CLAUDE_CONFIG_DIR=$OAUTHPY_HOME/claude
+```
 
-`oauthpy.Client("claude").login()` shells out to `claude setup-token`.
+The same resolved environment is passed into `ClaudeAgentOptions(env=...)` for SDK runs. For `auth_source="external"`, oauthpy does not set `CLAUDE_CONFIG_DIR`.
 
-## Why oauthpy does not refresh tokens itself
+For `auth_source="auto"`, oauthpy checks isolated Claude status first if isolated state appears to exist, then checks external `claude auth status --json`. If CLI status is unavailable, it falls back to documented environment-based auth indicators without exposing values:
 
-OpenClaw's OAuth concepts documentation [describes](https://docs.openclaw.ai/concepts/oauth) a layer that *does* manage refresh — with file locks, provenance tracking, and mirroring from upstream CLI credential stores. That is the right shape for a gateway/orchestrator that wants a single canonical credential store across many agents.
+- `CLAUDE_CODE_USE_BEDROCK`
+- `CLAUDE_CODE_USE_VERTEX`
+- `CLAUDE_CODE_USE_FOUNDRY`
+- `ANTHROPIC_AUTH_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `CLAUDE_CODE_OAUTH_TOKEN`
 
-`oauthpy` v0.1 is deliberately a layer below that. Every call flows through the upstream tool (`codex` CLI / `claude-agent-sdk`), which means:
+`claude setup-token` is not normal interactive login. It is a separate CI/headless helper that prints a long-lived token; oauthpy does not call it for `Client("claude").login()`.
 
-- The upstream tool's refresh logic is always in charge; `oauthpy` never writes tokens.
-- If `codex` or `claude-agent-sdk` changes its auth format, `oauthpy` is unaffected.
-- There is no "stale mirror" failure mode: the on-disk token read by Codex is the only one.
-- A future oauthpy backend could add file-locked refresh or direct PKCE without breaking the public API — see `auth.py`.
+## OpenClaw Precedent
 
-## Required permissions on the host
+OpenClaw's OAuth/provider docs describe a broader operational layer for gateways and orchestrators: token provenance, locks, refresh state, and explicit provider credential management. oauthpy deliberately stays below that layer in v0.1:
 
-- **Codex**: ability to run the `codex` binary, read/write its own state under `~/.codex/`, and open `http://127.0.0.1:1455` during login.
-- **Claude**: ability to import `claude-agent-sdk`, read `~/.claude.json` if it exists, and see `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` from the environment.
+- It is a local wrapper, not a hosted credential relay.
+- It does not reverse-engineer OAuth endpoints.
+- It does not copy external vendor tokens into `~/.oauthpy/` by default.
+- It relies on official CLIs/SDKs to own auth and refresh behavior.
 
-No other network or filesystem capabilities are required by oauthpy itself.
+The auth-source layer leaves room for a future direct backend without changing the public API, but that backend is intentionally not implemented in v0.1.

@@ -52,6 +52,23 @@ def test_windows_paths_golden(codex_fixtures_dir: Path) -> None:
     assert file_change.text == r"C:\Users\alice\project\src\main.py"
 
 
+def test_current_schema_golden(codex_fixtures_dir: Path) -> None:
+    events = parse_jsonl(_load(codex_fixtures_dir / "current_schema.jsonl"))
+    kinds = [event.kind for event in events]
+    assert EventKind.MESSAGE in kinds
+    assert EventKind.COMMAND in kinds
+    assert EventKind.FILE_CHANGE in kinds
+    assert kinds.count(EventKind.TOOL) == 2
+    assert EventKind.PLAN in kinds
+    assert EventKind.DONE in kinds
+    assert EventKind.ERROR in kinds
+    assert any(event.text == "Hello from current schema." for event in events)
+    assert any(event.text == "pytest -q" for event in events)
+    assert any(event.text == "src/oauthpy/example.py" for event in events)
+    done = next(event for event in events if event.kind is EventKind.DONE)
+    assert done.raw["usage"]["total_tokens"] == 15
+
+
 def test_malformed_line_becomes_error_event() -> None:
     events = parse_jsonl(['{"type": "agent_message", not valid json'])
     assert len(events) == 1

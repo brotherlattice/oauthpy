@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
+import subprocess
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 
@@ -36,14 +38,26 @@ def which(binary: str) -> str | None:
     return shutil.which(binary)
 
 
-def _merge_env(extra: Mapping[str, str] | None) -> Mapping[str, str] | None:
+def _merge_env(extra: Mapping[str, str | None] | None) -> Mapping[str, str] | None:
     """Merge ``extra`` into ``os.environ`` without mutating the current process."""
 
     if extra is None:
         return None
     merged = dict(os.environ)
-    merged.update(extra)
+    for key, value in extra.items():
+        if value is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = value
     return merged
+
+
+def _process_group_kwargs() -> dict[str, object]:
+    """Return subprocess kwargs that isolate children into a killable tree root."""
+
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 def _resolve_argv0(argv: list[str]) -> list[str]:
@@ -74,7 +88,7 @@ async def run(
     argv: list[str],
     *,
     cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
+    env: Mapping[str, str | None] | None = None,
     timeout: float | None = None,
     stdin: str | None = None,
 ) -> CompletedProcess:
@@ -97,6 +111,7 @@ async def run(
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_process_group_kwargs(),
         )
     except FileNotFoundError as exc:
         raise CommandExecutionError(
@@ -128,11 +143,51 @@ async def run(
     )
 
 
+async def run_interactive(
+    argv: list[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str | None] | None = None,
+    timeout: float | None = None,
+) -> CompletedProcess:
+    """Run a subprocess with inherited stdio for browser/device login flows."""
+
+    if not argv:
+        raise CommandExecutionError("empty argv")
+    resolved = _resolve_argv0(argv)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *resolved,
+            cwd=os.fspath(cwd) if cwd is not None else None,
+            env=_merge_env(env),
+            **_process_group_kwargs(),
+        )
+    except FileNotFoundError as exc:
+        raise CommandExecutionError(
+            f"binary not found: {argv[0]!r}",
+            returncode=None,
+        ) from exc
+    except OSError as exc:
+        raise CommandExecutionError(
+            f"failed to start {redact_argv(resolved)!r}: {exc}",
+            returncode=None,
+        ) from exc
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        await _kill(proc)
+        raise TimeoutExceededError(
+            f"command timed out after {timeout}s: {redact_argv(resolved)!r}"
+        ) from exc
+    return CompletedProcess(returncode=proc.returncode or 0, stdout="", stderr="")
+
+
 async def stream_lines(
     argv: list[str],
     *,
     cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
+    env: Mapping[str, str | None] | None = None,
     timeout: float | None = None,
 ) -> AsyncIterator[str]:
     """Run a subprocess and yield stdout lines as they arrive.
@@ -155,6 +210,7 @@ async def stream_lines(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_process_group_kwargs(),
         )
     except FileNotFoundError as exc:
         raise CommandExecutionError(
@@ -198,15 +254,19 @@ async def stream_lines(
             yield line.decode("utf-8", errors="replace").rstrip("\r\n")
 
     async def _guarded() -> AsyncIterator[str]:
+        killed = False
+        completed = False
         try:
             if timeout is None:
                 async for line in _iterate():
                     yield line
+                completed = True
             else:
                 deadline = asyncio.get_event_loop().time() + timeout
                 while True:
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
+                        killed = True
                         await _kill(proc)
                         raise TimeoutExceededError(
                             f"command timed out after {timeout}s: {redact_argv(resolved)!r}"
@@ -217,17 +277,24 @@ async def stream_lines(
                             timeout=remaining,
                         )
                     except asyncio.TimeoutError as exc:
+                        killed = True
                         await _kill(proc)
                         raise TimeoutExceededError(
                             f"command timed out after {timeout}s: {redact_argv(resolved)!r}"
                         ) from exc
                     if not line:
+                        completed = True
                         break
                     yield line.decode("utf-8", errors="replace").rstrip("\r\n")
         finally:
-            await proc.wait()
+            if completed:
+                await proc.wait()
+            elif proc.returncode is None:
+                killed = True
+                await _kill(proc)
+                await proc.wait()
             stderr_bytes = await stderr_task
-            if proc.returncode not in (0, None):
+            if proc.returncode not in (0, None) and not killed:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace")
                 raise CommandExecutionError(
                     f"{argv[0]!r} exited with code {proc.returncode}",
@@ -240,19 +307,26 @@ async def stream_lines(
 
 
 async def _kill(proc: asyncio.subprocess.Process) -> None:
-    """Best-effort terminate-then-kill so we don't leak zombies on timeout."""
+    """Best-effort terminate the whole process tree rooted at ``proc``."""
 
     if proc.returncode is not None:
         return
+    if os.name == "nt":
+        await _kill_windows(proc)
+    else:
+        await _kill_posix(proc)
+
+
+async def _kill_posix(proc: asyncio.subprocess.Process) -> None:
     try:
-        proc.terminate()
+        os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
     try:
         await asyncio.wait_for(proc.wait(), timeout=2.0)
     except asyncio.TimeoutError:
         try:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             return
         try:
@@ -261,4 +335,36 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
             return
 
 
-__all__ = ["CompletedProcess", "run", "stream_lines", "which"]
+async def _kill_windows(proc: asyncio.subprocess.Process) -> None:
+    try:
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(proc.pid),
+            "/T",
+            "/F",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(killer.wait(), timeout=5.0)
+    except (FileNotFoundError, OSError, asyncio.TimeoutError):
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+            return
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                return
+    try:
+        await proc.wait()
+    except ProcessLookupError:  # pragma: no cover - race on exit
+        return
+
+
+__all__ = ["CompletedProcess", "run", "run_interactive", "stream_lines", "which"]

@@ -18,4 +18,5 @@ src/oauthpy/_version.py
 .vscode/
 nul
 .claude/
+.codex
 *.zip

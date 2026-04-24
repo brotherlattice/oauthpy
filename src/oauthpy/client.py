@@ -14,11 +14,12 @@ import os
 import queue
 import threading
 from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import suppress
 from typing import Any, get_args, overload
 
-from .auth import AuthBackend
+from .auth import AuthBackend, normalize_auth_source
 from .errors import UnsupportedProviderError
-from .models import AuthStatus, Event, ProviderName, RunResult
+from .models import AuthSource, AuthStatus, Event, ProviderName, RunResult
 from .providers.base import Provider
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
@@ -77,6 +78,8 @@ class Client:
         self,
         provider: ProviderName,
         *,
+        auth_source: AuthSource = "auto",
+        oauthpy_home: str | os.PathLike[str] | None = None,
         auth_backend: AuthBackend | None = None,
     ) -> None:
         if provider not in _PROVIDERS:
@@ -84,7 +87,11 @@ class Client:
                 f"unknown provider {provider!r}; expected one of {_PROVIDERS}"
             )
         self.provider: ProviderName = provider
-        self._adapter: Provider = _PROVIDER_REGISTRY[provider]()
+        normalized_source = normalize_auth_source(auth_source)
+        self._adapter: Provider = _PROVIDER_REGISTRY[provider](
+            auth_source=normalized_source,
+            oauthpy_home=oauthpy_home,
+        )
         # Only materialize a backend when the caller injects one; otherwise
         # route auth calls directly to the adapter and skip a hop.
         self._auth_backend: AuthBackend | None = auth_backend
@@ -204,35 +211,56 @@ class Client:
     ) -> Iterator[Event]:
         """Synchronous facade over :meth:`stream`.
 
-        Drains the async iterator on a background thread and yields events
-        from the caller's thread via a blocking queue. The iterator stops
-        when the underlying stream ends or raises; exceptions are re-raised
-        from the caller's thread.
+        Drains the async iterator on a background thread. Closing this iterator
+        early signals the worker loop to close the underlying async stream,
+        which lets provider subprocesses terminate promptly.
         """
 
         sentinel = object()
-        q: queue.Queue[Any] = queue.Queue(maxsize=64)
+        q: queue.Queue[Any] = queue.Queue()
+        stop_requested = threading.Event()
 
         async def _drain() -> None:
+            iterator = self.stream(
+                prompt,
+                cwd=cwd,
+                model=model,
+                timeout=timeout,
+                env=env,
+                provider_options=provider_options,
+            ).__aiter__()
+            next_task: asyncio.Task[Event] | None = None
             try:
-                async for ev in self.stream(
-                    prompt,
-                    cwd=cwd,
-                    model=model,
-                    timeout=timeout,
-                    env=env,
-                    provider_options=provider_options,
-                ):
-                    q.put(ev)
+                while not stop_requested.is_set():
+                    if next_task is None:
+                        next_task = asyncio.create_task(iterator.__anext__())
+                    done, _ = await asyncio.wait({next_task}, timeout=0.1)
+                    if not done:
+                        continue
+                    try:
+                        q.put(next_task.result())
+                    except StopAsyncIteration:
+                        return
+                    next_task = None
             except BaseException as exc:  # pragma: no cover - forwarded
-                q.put(("__error__", exc))
+                if not stop_requested.is_set():
+                    q.put(("__error__", exc))
             finally:
+                if next_task is not None and not next_task.done():
+                    next_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await next_task
+                aclose = getattr(iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
                 q.put(sentinel)
 
         def _target() -> None:
             loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(_drain())
+                loop.run_until_complete(loop.shutdown_asyncgens())
             finally:
                 loop.close()
 
@@ -248,6 +276,7 @@ class Client:
                     raise item[1]
                 yield item
         finally:
+            stop_requested.set()
             thread.join(timeout=5.0)
 
 

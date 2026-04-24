@@ -7,11 +7,10 @@ Claude install.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from oauthpy import EventKind, ProviderNotInstalledError
+from oauthpy._subprocess import CompletedProcess
 from oauthpy.providers import claude as claude_mod
 from tests.fixtures import fake_claude_sdk
 
@@ -30,7 +29,7 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> list:
 
 
 async def test_run_returns_result(fake_sdk: list, clean_env: None) -> None:
-    provider = claude_mod.ClaudeProvider()
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     result = await provider.run("hello", cwd="/tmp/work", model="claude-opus-4-7")
     assert result.provider == "claude"
     assert result.transport == "claude-agent-sdk"
@@ -41,7 +40,7 @@ async def test_run_returns_result(fake_sdk: list, clean_env: None) -> None:
 
 
 async def test_stream_yields_events_in_order(fake_sdk: list, clean_env: None) -> None:
-    provider = claude_mod.ClaudeProvider()
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     kinds = []
     async for ev in provider.stream("hello"):
         kinds.append(ev.kind)
@@ -54,7 +53,7 @@ async def test_run_raises_when_sdk_missing(
     monkeypatch: pytest.MonkeyPatch, clean_env: None
 ) -> None:
     monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
-    provider = claude_mod.ClaudeProvider()
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     with pytest.raises(ProviderNotInstalledError):
         await provider.run("hi")
 
@@ -62,8 +61,9 @@ async def test_run_raises_when_sdk_missing(
 async def test_auth_status_env_var_mode(
     monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "some-token-value")
-    provider = claude_mod.ClaudeProvider()
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.installed is True
     assert status.authenticated is True
@@ -73,32 +73,40 @@ async def test_auth_status_env_var_mode(
 async def test_auth_status_api_key_mode(
     monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-abcdefghijklmnop")
-    provider = claude_mod.ClaudeProvider()
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.authenticated is True
     assert status.mode == "api-key"
 
 
-async def test_auth_status_login_state_mode(
-    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, tmp_path: Path, clean_env: None
+async def test_auth_status_uses_claude_auth_status_json(
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:
-    # Point CLAUDE_CONFIG_HOME at a tmp dir with a .claude.json file.
-    fake_json = tmp_path / ".claude.json"
-    fake_json.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("CLAUDE_CONFIG_HOME", str(tmp_path))
-    provider = claude_mod.ClaudeProvider()
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
+
+    async def fake_run(argv: list[str], **_: object) -> CompletedProcess:
+        assert argv == ["/usr/bin/claude", "auth", "status", "--json"]
+        return CompletedProcess(
+            returncode=0,
+            stdout='{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(claude_mod._subprocess, "run", fake_run)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.authenticated is True
-    assert status.mode == "login-state"
+    assert status.mode == "oauth"
+    assert status.details["auth_method"] == "claude.ai"
 
 
 async def test_auth_status_unknown(
-    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, tmp_path: Path, clean_env: None
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:
-    # CLAUDE_CONFIG_HOME points at a dir *without* a .claude.json — so unknown.
-    monkeypatch.setenv("CLAUDE_CONFIG_HOME", str(tmp_path))
-    provider = claude_mod.ClaudeProvider()
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.authenticated is False
     assert status.mode == "unknown"
@@ -120,3 +128,97 @@ async def test_classifier_result_message_without_text() -> None:
     kind, text = claude_mod._classify_sdk_message(FakeResult())
     assert kind is EventKind.DONE
     assert text is None or text == ""
+
+
+async def test_login_uses_claude_auth_login(
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
+
+    async def fake_run_interactive(argv: list[str], **kwargs: object) -> CompletedProcess:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return CompletedProcess(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(claude_mod._subprocess, "run_interactive", fake_run_interactive)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    await provider.login()
+    assert captured["argv"] == ["/usr/bin/claude", "auth", "login"]
+
+
+async def test_env_passed_to_claude_agent_options(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    messages = fake_claude_sdk.default_messages()
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        captured["env"] = options.env
+        for message in messages:
+            yield message
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="oauthpy", oauthpy_home="/tmp/oauthpy-test")
+    await provider.run("hello", env={"ANTHROPIC_API_KEY": "explicit"})
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["CLAUDE_CONFIG_DIR"] == "/tmp/oauthpy-test/claude"
+    assert env["ANTHROPIC_API_KEY"] == "explicit"
+
+
+async def test_external_source_does_not_set_claude_config_dir(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    messages = fake_claude_sdk.default_messages()
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        captured["env"] = options.env
+        for message in messages:
+            yield message
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    await provider.run("hello")
+    assert captured["env"] == {}
+
+
+async def test_tool_blocks_classified(fake_sdk: list, clean_env: None) -> None:
+    fake_sdk[:] = [
+        fake_claude_sdk.AssistantMessage(
+            content=[
+                fake_claude_sdk.ToolUseBlock(id="1", name="Read", input={}),
+                fake_claude_sdk.ToolResultBlock(tool_use_id="1", content="ok"),
+            ]
+        ),
+        fake_claude_sdk.ResultMessage(result="done"),
+    ]
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    result = await provider.run("hello")
+    assert [event.kind for event in result.events].count(EventKind.TOOL) == 2
+
+
+async def test_result_message_usage_and_cost_extracted(fake_sdk: list, clean_env: None) -> None:
+    fake_sdk[:] = [
+        fake_claude_sdk.ResultMessage(
+            result="done",
+            usage={"input_tokens": 4, "output_tokens": 6},
+            total_cost_usd=0.12,
+        )
+    ]
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    result = await provider.run("hello")
+    assert result.usage is not None
+    assert result.usage.input_tokens == 4
+    assert result.usage.output_tokens == 6
+    assert result.usage.total_tokens == 10
+    assert result.usage.cost_usd == 0.12

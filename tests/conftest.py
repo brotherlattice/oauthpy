@@ -18,8 +18,15 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for key in (
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
         "OAUTHPY_CODEX_BINARY",
-        "CLAUDE_CONFIG_HOME",
+        "OAUTHPY_CLAUDE_BINARY",
+        "OAUTHPY_HOME",
+        "OPENAI_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)

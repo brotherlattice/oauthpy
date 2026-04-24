@@ -2,10 +2,10 @@
 
 Prerequisite:
     1. `pip install claude-agent-sdk` (or `pip install oauthpy[claude]`)
-    2. Configure auth — one of:
-       * `export CLAUDE_CODE_OAUTH_TOKEN=...`
-       * `export ANTHROPIC_API_KEY=...`
-       * log in via Claude Code so `~/.claude.json` exists
+    2. Configure auth:
+       * `oauthpy auth login --provider claude`
+       * or reuse an existing Claude Code login with `auth_source="external"`
+       * or use documented environment auth for headless/CI runs
 """
 
 from __future__ import annotations

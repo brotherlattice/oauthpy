@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -24,10 +25,10 @@ async def test_auth_status_logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
 
     async def fake_run(argv: list[str], **_: object) -> CompletedProcess:
-        return CompletedProcess(returncode=0, stdout="", stderr="")
+        return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
 
     monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
-    provider = codex_mod.CodexProvider()
+    provider = codex_mod.CodexProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.installed is True
     assert status.authenticated is True
@@ -41,7 +42,7 @@ async def test_auth_status_logged_out(monkeypatch: pytest.MonkeyPatch) -> None:
         return CompletedProcess(returncode=1, stdout="", stderr="not logged in")
 
     monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
-    provider = codex_mod.CodexProvider()
+    provider = codex_mod.CodexProvider(auth_source="external")
     status = await provider.auth_status()
     assert status.installed is True
     assert status.authenticated is False
@@ -83,16 +84,40 @@ async def test_run_streams_and_aggregates(monkeypatch: pytest.MonkeyPatch) -> No
     argv = captured["argv"]
     assert isinstance(argv, list)
     assert "exec" in argv and "--json" in argv
-    assert "--skip-git-repo-check" in argv
+    assert "--skip-git-repo-check" not in argv
     assert "--model" in argv and "gpt-5" in argv
     assert "--cd" in argv and "/tmp/work" in argv
     assert "--sandbox" in argv and "workspace-write" in argv
     assert argv[-1] == "say hi"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["env"] is None
 
     assert result.provider == "codex"
     assert result.transport == "codex-cli-jsonl"
     assert result.text == "hello\nthere"
     assert any(e.kind is EventKind.DONE for e in result.events)
+
+
+async def test_run_extracts_usage_from_turn_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        yield '{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}'
+        yield (
+            '{"type": "turn.completed", '
+            '"usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}'
+        )
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    result = await provider.run("p")
+    assert result.usage is not None
+    assert result.usage.input_tokens == 2
+    assert result.usage.output_tokens == 3
+    assert result.usage.total_tokens == 5
 
 
 async def test_stream_synthesizes_done_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +127,7 @@ async def test_stream_synthesizes_done_when_missing(monkeypatch: pytest.MonkeyPa
         yield '{"type": "agent_message", "text": "no done marker here"}'
 
     monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
-    provider = codex_mod.CodexProvider()
+    provider = codex_mod.CodexProvider(auth_source="external")
 
     events = []
     async for ev in provider.stream("hi"):
@@ -120,7 +145,7 @@ async def test_provider_options_pass_through_unknown_keys(monkeypatch: pytest.Mo
         yield '{"type": "task_complete"}'
 
     monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
-    provider = codex_mod.CodexProvider()
+    provider = codex_mod.CodexProvider(auth_source="external")
     await provider.run(
         "p",
         provider_options={"full_auto": True, "ask_for_approval": "never", "custom_key": "v"},
@@ -131,6 +156,113 @@ async def test_provider_options_pass_through_unknown_keys(monkeypatch: pytest.Mo
     assert "--full-auto" in argv
     assert "--ask-for-approval" in argv and "never" in argv
     assert "custom_key=v" in joined
+
+
+async def test_skip_git_repo_check_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        captured["argv"] = argv
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    await provider.run("p", provider_options={"skip_git_repo_check": True})
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "--skip-git-repo-check" in argv
+
+
+async def test_oauthpy_source_applies_codex_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_lines(argv: list[str], **kwargs: object) -> AsyncIterator[str]:
+        captured["kwargs"] = kwargs
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="oauthpy", oauthpy_home=tmp_path)
+    await provider.run("p")
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["CODEX_HOME"] == str(tmp_path / "codex")
+    assert env["OPENAI_API_KEY"] is None
+
+
+async def test_login_defaults_to_oauthpy_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+
+    async def fake_run_interactive(argv: list[str], **kwargs: object) -> CompletedProcess:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return CompletedProcess(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(codex_mod._subprocess, "run_interactive", fake_run_interactive)
+    provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
+    await provider.login()
+    assert captured["argv"] == ["codex", "login"]
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["CODEX_HOME"] == str(tmp_path / "codex")
+
+
+def test_codex_config_store_setup_preserves_existing_config(tmp_path: Path) -> None:
+    provider = codex_mod.CodexProvider(auth_source="oauthpy", oauthpy_home=tmp_path)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True)
+    config = codex_home / "config.toml"
+    config.write_text('[sandbox]\nmode = "workspace-write"\n', encoding="utf-8")
+    provider._ensure_codex_config()
+    text = config.read_text(encoding="utf-8")
+    assert 'cli_auth_credentials_store = "file"' in text
+    assert '[sandbox]\nmode = "workspace-write"\n' in text
+
+
+async def test_auto_prefers_authenticated_oauthpy_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True)
+    (codex_home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+    seen_envs: list[object] = []
+
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        seen_envs.append(kwargs.get("env"))
+        env = kwargs.get("env")
+        if isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home):
+            return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+        return CompletedProcess(returncode=1, stdout="", stderr="Not logged in")
+
+    async def fake_stream_lines(argv: list[str], **kwargs: object) -> AsyncIterator[str]:
+        seen_envs.append(kwargs.get("env"))
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
+    await provider.run("p")
+    assert any(
+        isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home)
+        for env in seen_envs
+    )
+
+
+def test_oauthpy_home_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OAUTHPY_HOME", str(tmp_path))
+    provider = codex_mod.CodexProvider(auth_source="oauthpy")
+    assert provider._codex_home == tmp_path / "codex"
 
 
 def test_codex_binary_env_var(monkeypatch: pytest.MonkeyPatch) -> None:

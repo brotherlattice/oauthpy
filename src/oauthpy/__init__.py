@@ -28,9 +28,11 @@ from .errors import (
 )
 from .models import (
     AuthMode,
+    AuthSource,
     AuthStatus,
     Event,
     EventKind,
+    JsonScalar,
     ProviderName,
     RunResult,
     TransportName,
@@ -44,12 +46,14 @@ except ImportError:  # pragma: no cover
 
 __all__ = [
     "AuthMode",
+    "AuthSource",
     "AuthRequiredError",
     "AuthStatus",
     "Client",
     "CommandExecutionError",
     "Event",
     "EventKind",
+    "JsonScalar",
     "OauthPyError",
     "ProtocolError",
     "ProviderName",

@@ -4,7 +4,7 @@
 
 Both Codex and Claude Code expose a "run a prompt locally, using my OAuth login" capability, but through very different integration surfaces:
 
-- **Codex** does not ship a stable Python SDK in v0.1. It does ship a mature `codex exec --json` mode in the official CLI that emits a newline-delimited JSON event stream covering messages, reasoning, plan updates, tool calls, command executions, file changes, errors, and a terminal `task_complete` marker. That stream is our only well-supported, forward-compatible programmatic surface, so `oauthpy.providers.codex` parses it.
+- **Codex** does not ship a stable Python SDK in v0.1. It does ship a mature `codex exec --json` mode in the official CLI that emits a newline-delimited JSON event stream covering thread/turn lifecycle events, item events, messages, reasoning, plan updates, tool calls, command executions, file changes, errors, and `turn.completed`. That stream is our supported local programmatic surface, so `oauthpy.providers.codex` parses it.
 - **Claude Code** ships `claude-agent-sdk` on PyPI with a streaming `query(prompt, options=ClaudeAgentOptions(...))` entrypoint. Messages are typed (`SystemMessage`, `AssistantMessage`, `ResultMessage`, ...). There's no reason to shell out to the `claude` CLI from Python when the SDK is right there, so `oauthpy.providers.claude` uses it directly.
 
 The consequence is that the two adapters look internally very different but converge on the same `Event` / `RunResult` / `AuthStatus` shapes, which is the entire point of this package.
@@ -15,9 +15,21 @@ The primitive is `async def Provider.run(...)` / `async def Provider.stream(...)
 
 - Called from synchronous code, `Client.run` and `Client.auth_status` block and return the resolved value.
 - Called from inside a running event loop, they return the coroutine so callers can `await` it.
-- `Client.stream` is always an async iterator. `Client.stream_sync` is a blocking iterator adapter that runs the async stream on a background thread.
+- `Client.stream_sync` drains the async stream on a background thread and closes the underlying stream when the caller stops iteration early.
 
-This mirrors the shape most Python developers expect from a modern SDK and lets the same code work from scripts, REPLs, Jupyter, FastAPI handlers, and so on.
+This mirrors the shape most Python developers expect from a modern SDK. In async applications, use `Client.stream`; `Client.stream_sync` is for synchronous callers.
+
+## Auth Source Layer
+
+Auth state is resolved before provider calls:
+
+| Source | Codex effect | Claude effect |
+|--------|--------------|---------------|
+| `auto` | Prefer authenticated `~/.oauthpy/codex`, then normal Codex CLI state. | Prefer authenticated `~/.oauthpy/claude`, then normal Claude CLI/session/env state. |
+| `oauthpy` | Set `CODEX_HOME=$OAUTHPY_HOME/codex`. | Set `CLAUDE_CONFIG_DIR=$OAUTHPY_HOME/claude`. |
+| `external` | Do not set `CODEX_HOME`. | Do not set `CLAUDE_CONFIG_DIR`. |
+
+`OAUTHPY_HOME` defaults to `~/.oauthpy`. Directory creation is private (`0700`) where the platform supports it. oauthpy never copies external vendor credentials into this tree by default.
 
 ## Event taxonomy
 
@@ -54,11 +66,12 @@ All error messages go through `_redact` so tokens and other secrets are masked b
 
 `auth.py` defines a minimal `AuthBackend` Protocol with `status(provider)` and `login(provider)`. The default implementation is `SubprocessAuthBackend`, which delegates to each provider adapter (which in turn shells out to the upstream CLI / SDK).
 
-A future direct-PKCE backend — for example, one that implements OpenAI's ChatGPT OAuth dance itself — would implement the same Protocol and be passed in via `Client(provider, auth_backend=...)`. The public `Client` API does not need to change.
+A future direct backend would implement the same Protocol and be passed in via `Client(provider, auth_backend=...)`. The public `Client` API does not need to change. v0.1 intentionally does not implement that backend because the supported path is official local CLIs/SDKs.
 
 ## What we deliberately do not do in v0.1
 
 - Do not edit `~/.codex/auth.json` or any Claude credential file.
+- Do not copy existing vendor tokens into `~/.oauthpy/` automatically.
 - Do not reverse-engineer vendor web endpoints.
 - Do not scrape TUI output.
 - Do not try to be wire-compatible with vendor cloud APIs.

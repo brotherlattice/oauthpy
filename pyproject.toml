@@ -40,6 +40,7 @@ test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.1",
 ]
 docs = [
     "sphinx~=7.4",
@@ -56,6 +57,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
+    "pytest-timeout>=2.3.1",
     "ruff==0.8.6",
     "twine>=5.1.0",
     "claude-agent-sdk>=0.1.65",
@@ -78,7 +80,7 @@ local_scheme = "no-local-version"
 fallback_version = "0.1.0"
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --disable-warnings --cov=oauthpy --cov-report=term-missing"
+addopts = "-vv --strict-markers --disable-warnings --timeout=60 --timeout-method=thread --cov=oauthpy --cov-report=term-missing"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [

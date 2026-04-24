@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from oauthpy import Client, Event, EventKind, UnsupportedProviderError
+from oauthpy._subprocess import CompletedProcess
 from oauthpy.providers import codex as codex_mod
 
 
@@ -20,7 +22,11 @@ def mocked_codex(monkeypatch: pytest.MonkeyPatch) -> None:
         yield '{"type": "agent_message", "text": "sync hi"}'
         yield '{"type": "task_complete"}'
 
+    async def fake_run(argv: list[str], **_: object) -> CompletedProcess:
+        return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+
     monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
 
 
 def test_unsupported_provider_rejected() -> None:
@@ -38,6 +44,27 @@ def test_stream_sync_yields_events(mocked_codex: None) -> None:
     client = Client("codex")
     events: list[Event] = list(client.stream_sync("hi"))
     assert [e.kind for e in events] == [EventKind.MESSAGE, EventKind.DONE]
+
+
+def test_stream_sync_close_cancels_background_stream(
+    mocked_codex: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed = threading.Event()
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        try:
+            yield '{"type": "agent_message", "text": "first"}'
+            await asyncio.sleep(30)
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+
+    client = Client("codex")
+    iterator = client.stream_sync("hi")
+    assert next(iterator).text == "first"
+    iterator.close()
+    assert closed.wait(timeout=2.0)
 
 
 def test_run_returns_coroutine_in_async_context(mocked_codex: None) -> None:

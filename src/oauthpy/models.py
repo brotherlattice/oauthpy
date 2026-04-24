@@ -16,8 +16,14 @@ from ._redact import redact
 ProviderName = Literal["codex", "claude"]
 """The set of providers oauthpy v0.1 supports."""
 
+AuthSource = Literal["auto", "oauthpy", "external"]
+"""Where oauthpy should look for provider auth/config."""
+
 TransportName = Literal["codex-cli-jsonl", "claude-agent-sdk"]
 """How a provider is being driven under the hood."""
+
+JsonScalar = str | int | float | bool | None
+"""Flat JSON-compatible diagnostic value."""
 
 
 class EventKind(str, Enum):
@@ -93,7 +99,7 @@ class RunResult:
         )
 
 
-AuthMode = Literal["oauth", "env", "login-state", "api-key", "unknown"]
+AuthMode = Literal["oauth", "env", "login-state", "api-key", "cloud", "unknown"]
 """How a provider is currently authenticated, from our point of view."""
 
 
@@ -110,14 +116,16 @@ class AuthStatus:
     installed: bool
     authenticated: bool
     mode: AuthMode
-    details: dict[str, str] = field(default_factory=dict)
+    details: dict[str, JsonScalar] = field(default_factory=dict)
 
 
 __all__ = [
     "AuthMode",
+    "AuthSource",
     "AuthStatus",
     "Event",
     "EventKind",
+    "JsonScalar",
     "ProviderName",
     "RunResult",
     "TransportName",

@@ -2,7 +2,7 @@
 
 ## Scope
 
-`oauthpy` v0.1 is a **local, single-user** Python library. It is designed to run on your machine, as you, using the OAuth login your official vendor tool already configured.
+`oauthpy` v0.1 is a **local, single-user** Python library. It is designed to run on your machine, as you, using official local CLIs/SDKs and either isolated `~/.oauthpy/` provider state or the normal vendor CLI/session state.
 
 ### In scope
 
@@ -11,6 +11,8 @@
 - Best-effort, read-only `Client.auth_status`.
 - `Client.login` that invokes the vendor's official login flow.
 - A tiny debugging CLI.
+- Isolated provider config directories via `auth_source="oauthpy"`.
+- External vendor session reuse via `auth_source="external"` or fallback from `auto`.
 
 ### Explicitly out of scope for v0.1
 
@@ -18,9 +20,10 @@
 - **Reverse-engineering vendor web endpoints.** We drive OAuth-authenticated local clients only.
 - **Scraping TUI output.** The Codex TUI is not a supported integration surface.
 - **Wire-compatibility with vendor cloud APIs.** `oauthpy` exposes its own small explicit Python API rather than pretending to be a clone of OpenAI's Responses API or Anthropic's Messages API.
-- **Editing credential files.** `oauthpy` never writes `~/.codex/auth.json` or any Claude credential file. We do not implement our own PKCE dance.
+- **Copying or importing tokens by default.** `oauthpy` never copies existing vendor credentials into `~/.oauthpy/` automatically.
+- **Editing normal vendor credential files.** `oauthpy` does not directly edit `~/.codex/auth.json` or Claude credential files. It may create provider-owned config files under `~/.oauthpy/` so the official tools can operate there.
 - **HTTP proxy/server.** The library is the product. A future proxy could wrap it; v0.1 does not include one.
-- **Full conversational session management.** Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
+- **Full conversational session management.** `oauthpy chat` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
 
 ## Compliance notes
 
@@ -30,13 +33,13 @@ The official `claude-agent-sdk` documentation states:
 
 > Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. Please use the API key authentication methods described in this document instead.
 
-`oauthpy` is not offering Claude.ai login to other people. It is a user's local wrapper around their own existing Claude auth — whatever the user's own `claude-agent-sdk` / Claude Code install already has configured. The SDK's authentication is entirely owned by the SDK; `oauthpy` never touches token files.
+`oauthpy` is not offering Claude.ai login to other people. It is a user's local wrapper around their own Claude auth. Login uses `claude auth login`; `claude setup-token` is a separate CI/headless helper and is not oauthpy's normal login path. The SDK's authentication is owned by Claude Code / the SDK; oauthpy only selects the config directory or passes documented env indicators through.
 
 If you intend to redistribute Claude access through `oauthpy` — e.g. build a hosted product, a team gateway, or a shared agent — you must switch to API-key auth and consult Anthropic's terms. Do not build a service that hands out Claude.ai sessions on someone else's behalf.
 
 ### OpenAI (Codex)
 
-OpenAI explicitly supports ChatGPT OAuth in third-party tools (the Codex CLI is designed for this). `oauthpy` runs the official `codex` CLI locally with your login. See [Codex authentication](https://developers.openai.com/codex/auth) for the authoritative documentation.
+OpenAI documents Codex CLI authentication and credential storage. `oauthpy` runs the official `codex` CLI locally with your login and, in isolated mode, sets `CODEX_HOME` so Codex owns state under `~/.oauthpy/codex`. See [Codex authentication](https://developers.openai.com/codex/auth) for the authoritative documentation.
 
 Do not use `oauthpy` to proxy ChatGPT Plus/Pro capacity to other users — that is not what the OAuth grant covers.
 
@@ -45,8 +48,10 @@ Do not use `oauthpy` to proxy ChatGPT Plus/Pro capacity to other users — that 
 - `shell=False` everywhere. All subprocess calls pass argv lists.
 - Best-effort secret redaction in logs, `repr`, and exception messages via `oauthpy._redact`.
 - `oauthpy` never prints OAuth tokens.
-- `oauthpy` never persists OAuth tokens beyond what upstream tools already manage.
+- `oauthpy` never persists OAuth tokens itself beyond what upstream tools already manage under the selected provider config directory.
 - No hidden global state: no module-level singletons, no env mutation outside the caller's explicit `env` argument.
+
+File-based credential storage is sensitive. Codex may store credentials in `auth.json`; Claude may store provider state under `CLAUDE_CONFIG_DIR`; and either provider may use OS keychain behavior depending on platform/config. oauthpy does not turn those files into a portable credential bundle.
 
 The redactor is heuristic — it catches common secret shapes (`sk-*`, `sk-ant-*`, `ghp_*`, `Bearer …`, JWTs, long hex blobs). It is not a replacement for careful logging, and it is not a security boundary. Do not print arbitrary user data and trust the redactor to catch everything.
 

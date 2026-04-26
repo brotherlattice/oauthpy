@@ -16,7 +16,9 @@ This project is still in an **alpha stage**. Expect rapid changes, incomplete fe
 
 # oauthpy
 
-`oauthpy` is a **local, user-operated** Python library that gives a small, typed, async-core-with-sync-facade API over two OAuth-authenticated local coding agents:
+**Local Python access to OAuth-authenticated coding agents.**
+
+`oauthpy` is a **local, user-operated** Python library that wraps local Codex and Claude Code sessions behind a small, typed, async-core-with-sync-facade API:
 
 - **Codex** (OpenAI), driven by the official `codex` CLI via `codex exec --json`
 - **Claude Code** (Anthropic), driven by the official `claude-agent-sdk`

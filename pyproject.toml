@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oauthpy"
 dynamic = ["version"]
-description = "Local, user-operated Python API around OAuth-authenticated Codex and Claude Code clients"
+description = "Local Python access to OAuth-authenticated Codex and Claude Code agents"
 readme = "README.md"
 authors = [
     { name = "Philipp Flotho" }

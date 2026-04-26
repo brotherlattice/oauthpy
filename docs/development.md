@@ -20,6 +20,21 @@ pytest
 # equivalent to: pytest -m "not live_codex and not live_claude"
 ```
 
+Offline tests are intentionally hermetic. They must not depend on a real
+`codex` binary, a real Claude Code install, network access, existing OAuth
+sessions, or writable provider home directories. Provider tests fake the
+official local integration boundary instead:
+
+- Codex tests fake `codex login status` and `codex exec --json` JSONL output.
+- Claude tests fake `claude auth status --json` and the `claude-agent-sdk`
+  message stream.
+- Missing-provider tests assert the public behavior: `auth_status()` reports
+  unauthenticated diagnostics, `available()` is false, and run/login paths raise
+  `ProviderNotInstalledError` when the required local tool is absent.
+
+If you need to verify a real vendor CLI or OAuth session, use the live markers
+below rather than weakening offline tests.
+
 Live tests require real provider setups and are opt-in:
 
 ```bash

@@ -9,7 +9,18 @@ import pytest
 
 from oauthpy._subprocess import CompletedProcess
 from oauthpy.cli import main
+from oauthpy.providers import claude as claude_mod
 from oauthpy.providers import codex as codex_mod
+
+
+@pytest.fixture(autouse=True)
+def no_real_provider_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI tests must explicitly fake provider discovery/auth state."""
+
+    def fail_unmocked_which(binary: str) -> str | None:
+        raise AssertionError(f"test attempted real provider discovery for {binary!r}")
+
+    monkeypatch.setattr(codex_mod._subprocess, "which", fail_unmocked_which)
 
 
 def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
@@ -36,6 +47,19 @@ def test_available_no(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFix
     rc = main(["available", "--provider", "codex"])
     assert rc == 1
     assert capsys.readouterr().out.strip() == "no"
+
+
+def test_claude_auth_status_json_when_sdk_and_cli_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _b: None)
+    rc = main(["auth", "status", "--provider", "claude", "--source", "external", "--json"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert '"provider": "claude"' in out
+    assert '"installed": false' in out
+    assert '"reason": "cli_missing"' in out
 
 
 def test_run_emits_text(

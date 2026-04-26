@@ -12,6 +12,16 @@ from oauthpy._subprocess import CompletedProcess
 from oauthpy.providers import codex as codex_mod
 
 
+@pytest.fixture(autouse=True)
+def no_real_codex_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider unit tests must install an explicit fake Codex binary state."""
+
+    def fail_unmocked_which(binary: str) -> str | None:
+        raise AssertionError(f"test attempted real provider discovery for {binary!r}")
+
+    monkeypatch.setattr(codex_mod._subprocess, "which", fail_unmocked_which)
+
+
 async def test_auth_status_no_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: None)
     provider = codex_mod.CodexProvider()
@@ -19,6 +29,7 @@ async def test_auth_status_no_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     assert status.installed is False
     assert status.authenticated is False
     assert status.mode == "unknown"
+    assert status.details["reason"] == "binary_missing"
 
 
 async def test_auth_status_logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -33,6 +44,7 @@ async def test_auth_status_logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
     assert status.installed is True
     assert status.authenticated is True
     assert status.mode == "oauth"
+    assert status.details["reason"] == "authenticated"
 
 
 async def test_auth_status_logged_out(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,6 +58,31 @@ async def test_auth_status_logged_out(monkeypatch: pytest.MonkeyPatch) -> None:
     status = await provider.auth_status()
     assert status.installed is True
     assert status.authenticated is False
+    assert status.details["reason"] == "not_authenticated"
+
+
+async def test_auto_auth_status_reports_no_source_when_logged_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+
+    async def fake_run(argv: list[str], **_: object) -> CompletedProcess:
+        return CompletedProcess(returncode=1, stdout="", stderr="not logged in")
+
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
+    provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
+    status = await provider.auth_status()
+    assert status.installed is True
+    assert status.authenticated is False
+    assert status.details["source"] == "none"
+    assert status.details["reason"] == "not_authenticated"
+    assert status.details["oauthpy_checked"] is False
+
+
+async def test_available_false_when_binary_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: None)
+    provider = codex_mod.CodexProvider()
+    assert await provider.available() is False
 
 
 async def test_run_missing_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,6 +90,13 @@ async def test_run_missing_binary_raises(monkeypatch: pytest.MonkeyPatch) -> Non
     provider = codex_mod.CodexProvider()
     with pytest.raises(ProviderNotInstalledError):
         await provider.run("hello")
+
+
+async def test_login_missing_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: None)
+    provider = codex_mod.CodexProvider()
+    with pytest.raises(ProviderNotInstalledError):
+        await provider.login()
 
 
 async def test_run_streams_and_aggregates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,7 +116,7 @@ async def test_run_streams_and_aggregates(monkeypatch: pytest.MonkeyPatch) -> No
             yield line
 
     monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
-    provider = codex_mod.CodexProvider()
+    provider = codex_mod.CodexProvider(auth_source="external")
 
     result = await provider.run(
         "say hi",

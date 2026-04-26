@@ -284,6 +284,7 @@ class ClaudeProvider(Provider):
                     "requested_source": requested_source,
                     "config_dir": str(self._claude_config_dir) if source == "oauthpy" else None,
                     "error": "claude CLI not found",
+                    "reason": "cli_missing",
                 },
             )
 
@@ -306,6 +307,7 @@ class ClaudeProvider(Provider):
                     "requested_source": requested_source,
                     "config_dir": str(self._claude_config_dir) if source == "oauthpy" else None,
                     "error": str(exc)[:200],
+                    "reason": "status_failed",
                 },
             )
         status = self._status_from_cli_json(
@@ -362,6 +364,7 @@ class ClaudeProvider(Provider):
                 "auth_method": _safe_str(payload.get("authMethod")),
                 "api_provider": _safe_str(payload.get("apiProvider")),
                 "subscription_type": _safe_str(payload.get("subscriptionType")),
+                "reason": "authenticated" if logged_in else "not_authenticated",
             },
         )
 
@@ -398,6 +401,7 @@ class ClaudeProvider(Provider):
                 "source": "external" if env_name else "none",
                 "requested_source": requested_source,
                 "env_auth": env_name,
+                "reason": "authenticated" if env_name else "not_authenticated",
             },
         )
 

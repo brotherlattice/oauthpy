@@ -15,6 +15,16 @@ from oauthpy.providers import claude as claude_mod
 from tests.fixtures import fake_claude_sdk
 
 
+@pytest.fixture(autouse=True)
+def no_real_claude_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider unit tests must install an explicit fake Claude CLI state."""
+
+    def fail_unmocked_which(binary: str) -> str | None:
+        raise AssertionError(f"test attempted real provider discovery for {binary!r}")
+
+    monkeypatch.setattr(claude_mod._subprocess, "which", fail_unmocked_which)
+
+
 @pytest.fixture()
 def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> list:
     """Install a fake claude-agent-sdk. Returns the (mutable) messages list."""
@@ -58,6 +68,35 @@ async def test_run_raises_when_sdk_missing(
         await provider.run("hi")
 
 
+async def test_login_missing_cli_raises(
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
+) -> None:
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(ProviderNotInstalledError):
+        await provider.login()
+
+
+async def test_auth_status_no_sdk_no_cli(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    status = await provider.auth_status()
+    assert status.installed is False
+    assert status.authenticated is False
+    assert status.details["reason"] == "cli_missing"
+
+
+async def test_available_false_without_auth(
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
+) -> None:
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    assert await provider.available() is False
+
+
 async def test_auth_status_env_var_mode(
     monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:
@@ -68,6 +107,7 @@ async def test_auth_status_env_var_mode(
     assert status.installed is True
     assert status.authenticated is True
     assert status.mode == "env"
+    assert status.details["reason"] == "authenticated"
 
 
 async def test_auth_status_api_key_mode(
@@ -79,6 +119,7 @@ async def test_auth_status_api_key_mode(
     status = await provider.auth_status()
     assert status.authenticated is True
     assert status.mode == "api-key"
+    assert status.details["reason"] == "authenticated"
 
 
 async def test_auth_status_uses_claude_auth_status_json(
@@ -100,6 +141,7 @@ async def test_auth_status_uses_claude_auth_status_json(
     assert status.authenticated is True
     assert status.mode == "oauth"
     assert status.details["auth_method"] == "claude.ai"
+    assert status.details["reason"] == "authenticated"
 
 
 async def test_auto_falls_back_when_oauthpy_status_times_out(
@@ -135,6 +177,7 @@ async def test_auth_status_unknown(
     status = await provider.auth_status()
     assert status.authenticated is False
     assert status.mode == "unknown"
+    assert status.details["reason"] == "cli_missing"
 
 
 async def test_classifier_handles_unknown_object() -> None:

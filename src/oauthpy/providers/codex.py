@@ -245,6 +245,7 @@ class CodexProvider(Provider):
                     "requested_source": self._auth_source,
                     "source": "none",
                     "provider_home": str(self._codex_home),
+                    "reason": "binary_missing",
                 },
             )
 
@@ -317,14 +318,16 @@ class CodexProvider(Provider):
                     "requested_source": requested_source,
                     "provider_home": str(self._codex_home) if source == "oauthpy" else None,
                     "error": str(exc)[:200],
+                    "reason": "status_failed",
                 },
             )
 
         mode, auth_method = self._classify_status(result.stdout, result.stderr, result.returncode)
+        authenticated = result.returncode == 0
         return AuthStatus(
             provider="codex",
             installed=True,
-            authenticated=result.returncode == 0,
+            authenticated=authenticated,
             mode=mode,
             details={
                 "binary": binary_path,
@@ -333,6 +336,7 @@ class CodexProvider(Provider):
                 "provider_home": str(self._codex_home) if source == "oauthpy" else None,
                 "exit_code": result.returncode,
                 "auth_method": auth_method,
+                "reason": "authenticated" if authenticated else "not_authenticated",
             },
         )
 

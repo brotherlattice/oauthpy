@@ -26,6 +26,7 @@ def main() -> None:
     result = client.run(
         "Write a failing test for a hypothetical `add(a, b)` function.",
         cwd=".",
+        timeout=120,
         provider_options={"allowed_tools": ["Read", "Glob", "Grep"]},
     )
     print(result.text)

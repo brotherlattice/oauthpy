@@ -20,6 +20,7 @@ from ..errors import (
     CommandExecutionError,
     ProtocolError,
     ProviderNotInstalledError,
+    TimeoutExceededError,
 )
 from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
 from .base import Provider
@@ -304,7 +305,7 @@ class CodexProvider(Provider):
                 env=env,
                 timeout=10.0,
             )
-        except CommandExecutionError as exc:
+        except (CommandExecutionError, TimeoutExceededError) as exc:
             return AuthStatus(
                 provider="codex",
                 installed=True,

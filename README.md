@@ -125,6 +125,73 @@ oauthpy auth status --provider codex --source auto
 oauthpy run --provider claude --source oauthpy "summarize this repo"
 ```
 
+## CLI setup debugging walk-through
+
+Use this sequence when validating a fresh machine or debugging provider setup. It checks the Python package, the vendor CLIs, auth-source resolution, one-shot runs, and the examples separately so failures are easier to localize.
+
+Create a clean environment and install oauthpy:
+
+```bash
+conda create -y -n oauthpy python=3.12 pip
+conda activate oauthpy
+python -m pip install -e ".[claude,dev]"
+python -c "from oauthpy import Client; print(Client)"
+oauthpy --help
+```
+
+Check that the provider CLIs are installed and visible:
+
+```bash
+codex --version
+claude --version
+```
+
+Inspect auth without printing secrets:
+
+```bash
+oauthpy auth status --provider codex --source auto --json
+oauthpy auth status --provider claude --source auto --json
+oauthpy available --provider codex
+oauthpy available --provider claude
+```
+
+If either provider is unauthenticated, use oauthpy-isolated login by default:
+
+```bash
+oauthpy auth login --provider codex
+oauthpy auth login --provider claude
+```
+
+To debug against the normal vendor CLI/session state instead, force external mode:
+
+```bash
+oauthpy auth status --provider codex --source external --json
+oauthpy auth status --provider claude --source external --json
+```
+
+Run minimal one-shot smoke tests:
+
+```bash
+oauthpy run --provider codex --source auto --cwd . "Reply with exactly oauthpy-codex-smoke"
+oauthpy run --provider claude --source auto --cwd . "Reply with exactly oauthpy-claude-smoke"
+```
+
+Then run the examples:
+
+```bash
+python examples/basic_codex.py
+python examples/basic_claude.py
+python examples/stream_codex.py
+python examples/stream_claude.py
+```
+
+Failure triage:
+
+- If Conda cannot create the environment, check network access to the configured channels and use writable cache directories such as `CONDA_PKGS_DIRS=/tmp/oauthpy-conda-pkgs` and `XDG_CACHE_HOME=/tmp/oauthpy-cache`.
+- If auth succeeds but Codex runs fail with a read-only filesystem error, ensure Codex can write its session/config state, or run an oauthpy-isolated login with a writable `OAUTHPY_HOME`.
+- If Claude auth succeeds but runs hang, test the upstream CLI directly with `claude -p "Reply with exactly oauthpy-claude-smoke"` to separate Claude Code/network issues from oauthpy wrapper issues.
+- Do not copy, paste, commit, or share credential files from `~/.oauthpy/` or the normal vendor config directories.
+
 ## Architecture note
 
 Codex and Claude Code expose very different integration surfaces on the supported, local path:

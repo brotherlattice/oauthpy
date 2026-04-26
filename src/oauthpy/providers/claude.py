@@ -287,11 +287,27 @@ class ClaudeProvider(Provider):
                 },
             )
 
-        result = await _subprocess.run(
-            [claude_bin, "auth", "status", "--json"],
-            env=self._subprocess_env(source),
-            timeout=10.0,
-        )
+        try:
+            result = await _subprocess.run(
+                [claude_bin, "auth", "status", "--json"],
+                env=self._subprocess_env(source),
+                timeout=10.0,
+            )
+        except (CommandExecutionError, TimeoutExceededError) as exc:
+            return AuthStatus(
+                provider="claude",
+                installed=sdk_present,
+                authenticated=False,
+                mode="unknown",
+                details={
+                    "sdk": "present" if sdk_present else "missing",
+                    "binary": claude_bin,
+                    "source": source,
+                    "requested_source": requested_source,
+                    "config_dir": str(self._claude_config_dir) if source == "oauthpy" else None,
+                    "error": str(exc)[:200],
+                },
+            )
         status = self._status_from_cli_json(
             result.stdout,
             source=source,

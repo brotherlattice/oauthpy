@@ -102,6 +102,31 @@ async def test_auth_status_uses_claude_auth_status_json(
     assert status.details["auth_method"] == "claude.ai"
 
 
+async def test_auto_falls_back_when_oauthpy_status_times_out(
+    monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None, tmp_path
+) -> None:
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
+    claude_home = tmp_path / "claude"
+    claude_home.mkdir(parents=True)
+    (claude_home / "settings.json").write_text("{}", encoding="utf-8")
+
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        env = kwargs.get("env")
+        if isinstance(env, dict) and env.get("CLAUDE_CONFIG_DIR") == str(claude_home):
+            raise claude_mod.TimeoutExceededError("status timed out")
+        return CompletedProcess(
+            returncode=0,
+            stdout='{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(claude_mod._subprocess, "run", fake_run)
+    provider = claude_mod.ClaudeProvider(auth_source="auto", oauthpy_home=tmp_path)
+    status = await provider.auth_status()
+    assert status.authenticated is True
+    assert status.details["source"] == "external"
+
+
 async def test_auth_status_unknown(
     monkeypatch: pytest.MonkeyPatch, fake_sdk: list, clean_env: None
 ) -> None:

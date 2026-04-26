@@ -14,6 +14,7 @@ async def main() -> None:
     async for event in Client("claude").stream(
         "List the top-level files in this repo.",
         cwd=".",
+        timeout=120,
         provider_options={"allowed_tools": ["Read", "Glob", "Bash"]},
     ):
         prefix = f"[{event.kind.value}]"

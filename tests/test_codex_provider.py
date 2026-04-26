@@ -259,6 +259,27 @@ async def test_auto_prefers_authenticated_oauthpy_source(
     )
 
 
+async def test_auto_falls_back_when_oauthpy_status_times_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True)
+    (codex_home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        env = kwargs.get("env")
+        if isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home):
+            raise codex_mod.TimeoutExceededError("status timed out")
+        return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
+    provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
+    status = await provider.auth_status()
+    assert status.authenticated is True
+    assert status.details["source"] == "external"
+
+
 def test_oauthpy_home_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("OAUTHPY_HOME", str(tmp_path))
     provider = codex_mod.CodexProvider(auth_source="oauthpy")

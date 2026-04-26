@@ -14,6 +14,7 @@ async def main() -> None:
     async for event in Client("codex").stream(
         "List the top-level files in this repo.",
         cwd=".",
+        timeout=120,
     ):
         if event.kind is EventKind.MESSAGE and event.text:
             print(f"[msg] {event.text}")

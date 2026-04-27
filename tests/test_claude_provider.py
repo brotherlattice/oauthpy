@@ -7,10 +7,13 @@ Claude install.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from oauthpy import EventKind, ProviderNotInstalledError
 from oauthpy._subprocess import CompletedProcess
+from oauthpy.defaults import DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT
 from oauthpy.providers import claude as claude_mod
 from tests.fixtures import fake_claude_sdk
 
@@ -47,6 +50,52 @@ async def test_run_returns_result(fake_sdk: list, clean_env: None) -> None:
     assert result.text == "ok"
     assert any(e.kind is EventKind.DONE for e in result.events)
     assert any(e.kind is EventKind.MESSAGE for e in result.events)
+
+
+async def test_run_defaults_to_opus_low_effort(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    messages = fake_claude_sdk.default_messages()
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        captured["model"] = options.model
+        captured["effort"] = options.effort
+        for message in messages:
+            yield message
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    await provider.run("hello")
+    assert captured["model"] == DEFAULT_CLAUDE_MODEL
+    assert captured["effort"] == DEFAULT_CLAUDE_REASONING_EFFORT
+
+
+async def test_provider_options_override_claude_default_effort(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    messages = fake_claude_sdk.default_messages()
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        captured["model"] = options.model
+        captured["effort"] = options.effort
+        for message in messages:
+            yield message
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    await provider.run("hello", model="sonnet", provider_options={"reasoning_effort": "high"})
+    assert captured["model"] == "sonnet"
+    assert captured["effort"] == "high"
 
 
 async def test_stream_yields_events_in_order(fake_sdk: list, clean_env: None) -> None:
@@ -214,7 +263,7 @@ async def test_login_uses_claude_auth_login(
 
 
 async def test_env_passed_to_claude_agent_options(
-    monkeypatch: pytest.MonkeyPatch, clean_env: None
+    monkeypatch: pytest.MonkeyPatch, clean_env: None, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
     messages = fake_claude_sdk.default_messages()
@@ -229,11 +278,11 @@ async def test_env_passed_to_claude_agent_options(
         "_sdk",
         lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
     )
-    provider = claude_mod.ClaudeProvider(auth_source="oauthpy", oauthpy_home="/tmp/oauthpy-test")
+    provider = claude_mod.ClaudeProvider(auth_source="oauthpy", oauthpy_home=tmp_path)
     await provider.run("hello", env={"ANTHROPIC_API_KEY": "explicit"})
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["CLAUDE_CONFIG_DIR"] == "/tmp/oauthpy-test/claude"
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "claude")
     assert env["ANTHROPIC_API_KEY"] == "explicit"
 
 

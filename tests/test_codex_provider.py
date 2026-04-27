@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from oauthpy import EventKind, ProviderNotInstalledError
+from oauthpy import CommandExecutionError, EventKind, ProtocolError, ProviderNotInstalledError
 from oauthpy._subprocess import CompletedProcess
+from oauthpy.defaults import DEFAULT_CODEX_REASONING_EFFORT
 from oauthpy.providers import codex as codex_mod
 
 
@@ -132,6 +133,8 @@ async def test_run_streams_and_aggregates(monkeypatch: pytest.MonkeyPatch) -> No
     assert "--model" in argv and "gpt-5" in argv
     assert "--cd" in argv and "/tmp/work" in argv
     assert "--sandbox" in argv and "workspace-write" in argv
+    assert "--config" in argv
+    assert f"model_reasoning_effort={DEFAULT_CODEX_REASONING_EFFORT}" in argv
     assert argv[-1] == "say hi"
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
@@ -218,6 +221,42 @@ async def test_skip_git_repo_check_is_opt_in(monkeypatch: pytest.MonkeyPatch) ->
     assert "--skip-git-repo-check" in argv
 
 
+async def test_codex_reasoning_effort_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        captured["argv"] = argv
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    await provider.run("p", provider_options={"reasoning_effort": "high"})
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "model_reasoning_effort=high" in argv
+    assert f"model_reasoning_effort={DEFAULT_CODEX_REASONING_EFFORT}" not in argv
+
+
+async def test_codex_config_mapping_overrides_default_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        captured["argv"] = argv
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    await provider.run("p", provider_options={"config": {"model_reasoning_effort": "xhigh"}})
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "model_reasoning_effort=xhigh" in argv
+    assert f"model_reasoning_effort={DEFAULT_CODEX_REASONING_EFFORT}" not in argv
+
+
 async def test_oauthpy_source_applies_codex_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -302,6 +341,41 @@ async def test_auto_prefers_authenticated_oauthpy_source(
     )
 
 
+async def test_auto_run_falls_back_to_authenticated_external_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True)
+    (codex_home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
+    status_envs: list[object] = []
+    stream_envs: list[object] = []
+
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        status_envs.append(kwargs.get("env"))
+        env = kwargs.get("env")
+        if isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home):
+            return CompletedProcess(returncode=1, stdout="", stderr="Not logged in")
+        return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+
+    async def fake_stream_lines(argv: list[str], **kwargs: object) -> AsyncIterator[str]:
+        stream_envs.append(kwargs.get("env"))
+        yield '{"type": "agent_message", "text": "external ok"}'
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
+    result = await provider.run("p")
+
+    assert result.text == "external ok"
+    assert any(
+        isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home) for env in status_envs
+    )
+    assert None in status_envs
+    assert stream_envs == [None]
+
+
 async def test_auto_falls_back_when_oauthpy_status_times_out(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -333,3 +407,30 @@ def test_codex_binary_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OAUTHPY_CODEX_BINARY", "/custom/codex-bin")
     provider = codex_mod.CodexProvider()
     assert provider._binary == "/custom/codex-bin"
+
+
+async def test_codex_exec_error_includes_resolved_source_and_redacted_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        if False:
+            yield ""
+        raise CommandExecutionError(
+            "'codex' exited with code 1",
+            returncode=1,
+            stderr="Windows launcher failed with sk-abcdefghijklmnopqrstuvwxyz1234",
+        )
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+
+    with pytest.raises(ProtocolError) as excinfo:
+        await provider.run("p")
+
+    message = str(excinfo.value)
+    assert "auth_source=external" in message
+    assert "Windows launcher failed" in message
+    assert "sk-abcdefghijklmnopqrstuvwxyz1234" not in message
+    assert "***REDACTED***" in message

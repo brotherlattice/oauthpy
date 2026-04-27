@@ -86,14 +86,30 @@ def test_run_accepts_source_external(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(codex_mod._subprocess, "which", lambda _b: "/usr/local/bin/codex")
+    captured: dict[str, object] = {}
 
     async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        captured["argv"] = argv
         yield '{"type": "agent_message", "text": "external out"}'
         yield '{"type": "task_complete"}'
 
     monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
-    rc = main(["run", "--provider", "codex", "--source", "external", "hello"])
+    rc = main(
+        [
+            "run",
+            "--provider",
+            "codex",
+            "--source",
+            "external",
+            "--reasoning-effort",
+            "high",
+            "hello",
+        ]
+    )
     assert rc == 0
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "model_reasoning_effort=high" in argv
     assert "external out" in capsys.readouterr().out
 
 
@@ -102,6 +118,7 @@ def test_interactive_repl_commands(
 ) -> None:
     monkeypatch.setattr(codex_mod._subprocess, "which", lambda _b: "/usr/local/bin/codex")
     prompts: list[str] = []
+    argv_seen: list[list[str]] = []
     kwargs_seen: list[dict[str, object]] = []
     login_calls: list[list[str]] = []
 
@@ -114,6 +131,7 @@ def test_interactive_repl_commands(
 
     async def fake_stream_lines(argv: list[str], **kwargs: object) -> AsyncIterator[str]:
         prompts.append(argv[-1])
+        argv_seen.append(argv)
         kwargs_seen.append(kwargs)
         yield '{"type": "reasoning", "text": "thinking"}'
         yield '{"type": "agent_message", "text": "assistant out"}'
@@ -126,6 +144,9 @@ def test_interactive_repl_commands(
             "/login external",
             "/cwd /tmp/work",
             "/model gpt-test",
+            "/models",
+            "/efforts",
+            "/effort high",
             "/timeout 12.5",
             "/events on",
             "/run one shot",
@@ -151,6 +172,7 @@ def test_interactive_repl_commands(
     assert prompts[2] == "first"
     assert login_calls == [["codex", "login"]]
     assert all(kwargs["cwd"] == "/tmp/work" for kwargs in kwargs_seen)
+    assert all("model_reasoning_effort=high" in argv for argv in argv_seen[:3])
 
     out = capsys.readouterr()
     assert "codex> assistant out" in out.out
@@ -160,6 +182,9 @@ def test_interactive_repl_commands(
     assert "login completed provider=codex source=external" in out.err
     assert "cwd=/tmp/work" in out.err
     assert "model=gpt-test" in out.err
+    assert "Codex model examples:" in out.err
+    assert "Codex reasoning efforts:" in out.err
+    assert "reasoning_effort=high" in out.err
     assert "timeout=12.5" in out.err
     assert "events=on" in out.err
     assert "[reasoning] thinking" in out.err

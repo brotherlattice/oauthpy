@@ -215,7 +215,7 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
         show_events=bool(args.show_events),
     )
     print(
-        "oauthpy interactive. Type /help for commands; /exit to quit.",
+        _interactive_banner(),
         file=sys.stderr,
     )
     while True:
@@ -245,9 +245,29 @@ def _handle_interactive_line(state: _InteractiveState, user_text: str) -> bool:
     stripped = user_text.strip()
     if stripped.startswith("/"):
         command, _, rest = stripped[1:].partition(" ")
+        command = _resolve_slash_command(command.lower())
+        if command is None:
+            return False
         return _handle_slash_command(state, command.lower(), rest.strip())
     _run_chat_turn(state, stripped)
     return False
+
+
+def _resolve_slash_command(command: str) -> str | None:
+    if command in _slash_commands():
+        return command
+    matches = [known for known in _slash_commands() if known.startswith(command)]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        print(
+            f"ambiguous command: /{command}; matches: "
+            + ", ".join(f"/{match}" for match in matches),
+            file=sys.stderr,
+        )
+        return None
+    print(f"unknown command: /{command}; type /help", file=sys.stderr)
+    return None
 
 
 def _handle_slash_command(state: _InteractiveState, command: str, rest: str) -> bool:
@@ -567,11 +587,40 @@ def _provider_options(
 def _read_interactive_input(message: str) -> str:
     if not sys.stdin.isatty():
         return input(message)
+    prompt_toolkit_input = _prompt_toolkit_input()
+    if prompt_toolkit_input is not None:
+        return prompt_toolkit_input(message)
+    readline_input = _readline_input()
+    if readline_input is not None:
+        return readline_input(message)
+    return input(message)
+
+
+def _interactive_banner() -> str:
+    base = "oauthpy interactive. Type /help for commands; /exit to quit."
+    backend = _completion_backend()
+    if backend == "prompt_toolkit":
+        return base + " Press Tab to complete /commands."
+    if backend == "readline":
+        return base + " Press Tab to complete /commands."
+    return base + " Tab completion unavailable; install prompt-toolkit or reinstall oauthpy."
+
+
+def _completion_backend() -> str:
+    if _prompt_toolkit_input() is not None:
+        return "prompt_toolkit"
+    if _readline_input() is not None:
+        return "readline"
+    return "none"
+
+
+def _prompt_toolkit_input():
     try:
         from prompt_toolkit import prompt
         from prompt_toolkit.completion import Completer, Completion
+        from prompt_toolkit.shortcuts import CompleteStyle
     except ImportError:
-        return input(message)
+        return None
 
     class SlashCompleter(Completer):
         def get_completions(self, document: object, _complete_event: object):
@@ -579,7 +628,43 @@ def _read_interactive_input(message: str) -> str:
             for value, start_position in _completion_matches(text):
                 yield Completion(value, start_position=start_position)
 
-    return prompt(message, completer=SlashCompleter())
+    def _read(message: str) -> str:
+        return prompt(
+            message,
+            completer=SlashCompleter(),
+            complete_style=CompleteStyle.MULTI_COLUMN,
+            complete_while_typing=True,
+        )
+
+    return _read
+
+
+def _readline_input():
+    try:
+        import readline
+    except ImportError:
+        return None
+
+    def _complete(_text: str, state: int) -> str | None:
+        line = readline.get_line_buffer()
+        end = readline.get_endidx()
+        candidates = [value for value, _ in _completion_matches(line[:end])]
+        return candidates[state] if state < len(candidates) else None
+
+    def _read(message: str) -> str:
+        old_completer = readline.get_completer()
+        old_delims = readline.get_completer_delims()
+        try:
+            readline.set_completer(_complete)
+            # Keep "/" as part of the token so completing "/h" replaces it with "/help".
+            readline.set_completer_delims(" \t\n")
+            readline.parse_and_bind("tab: complete")
+            return input(message)
+        finally:
+            readline.set_completer(old_completer)
+            readline.set_completer_delims(old_delims)
+
+    return _read
 
 
 def _completion_matches(text_before_cursor: str) -> list[tuple[str, int]]:
@@ -625,6 +710,10 @@ def _completion_tree() -> dict[str, tuple[str, ...] | None]:
         "/stream": None,
         "/chat": None,
     }
+
+
+def _slash_commands() -> tuple[str, ...]:
+    return tuple(command[1:] for command in _completion_tree())
 
 
 if __name__ == "__main__":  # pragma: no cover

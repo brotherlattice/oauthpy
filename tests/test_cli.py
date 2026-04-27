@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import builtins
+import sys
+import types
 from collections.abc import AsyncIterator
 
 import pytest
 
 from oauthpy._subprocess import CompletedProcess
-from oauthpy.cli import _completion_matches, main
+from oauthpy.cli import _completion_matches, _interactive_banner, _prompt_toolkit_input, main
 from oauthpy.providers import claude as claude_mod
 from oauthpy.providers import codex as codex_mod
 
@@ -35,10 +37,66 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
 def test_interactive_slash_completion_candidates() -> None:
     command_matches = _completion_matches("/h")
     assert ("/help", -2) in command_matches
+    assert ("/help", -1) in _completion_matches("/")
     assert _completion_matches("hello") == []
     assert ("codex", -1) in _completion_matches("/provider c")
+    assert ("claude", 0) in _completion_matches("/provider ")
     assert ("high", -1) in _completion_matches("/effort h")
     assert ("sonnet", -1) in _completion_matches("/model s")
+
+
+def test_interactive_banner_mentions_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("oauthpy.cli._completion_backend", lambda: "prompt_toolkit")
+    assert "Press Tab to complete /commands" in _interactive_banner()
+    monkeypatch.setattr("oauthpy.cli._completion_backend", lambda: "none")
+    assert "Tab completion unavailable" in _interactive_banner()
+
+
+def test_prompt_toolkit_backend_imports_complete_style_from_shortcuts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    package = types.ModuleType("prompt_toolkit")
+    package.__path__ = []  # type: ignore[attr-defined]
+
+    def fake_prompt(message: str, **kwargs: object) -> str:
+        calls["message"] = message
+        calls["kwargs"] = kwargs
+        return "/exit"
+
+    package.prompt = fake_prompt  # type: ignore[attr-defined]
+
+    completion = types.ModuleType("prompt_toolkit.completion")
+
+    class Completer:
+        pass
+
+    class Completion:
+        def __init__(self, text: str, *, start_position: int) -> None:
+            self.text = text
+            self.start_position = start_position
+
+    completion.Completer = Completer  # type: ignore[attr-defined]
+    completion.Completion = Completion  # type: ignore[attr-defined]
+
+    shortcuts = types.ModuleType("prompt_toolkit.shortcuts")
+
+    class CompleteStyle:
+        MULTI_COLUMN = "multi-column"
+
+    shortcuts.CompleteStyle = CompleteStyle  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", package)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.completion", completion)
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.shortcuts", shortcuts)
+
+    read = _prompt_toolkit_input()
+    assert read is not None
+    assert read("oauthpy> ") == "/exit"
+    kwargs = calls["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["complete_style"] == "multi-column"
+    assert kwargs["complete_while_typing"] is True
 
 
 def test_auth_status_json(

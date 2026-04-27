@@ -54,7 +54,7 @@ Out of scope for v0.1:
 python -m pip install oauthpy
 ```
 
-Python 3.10+. Cross-platform (Windows, Linux, macOS).
+Tested on Python 3.10-3.13 across Windows, Linux, and macOS.
 
 Gemini support has no extra Python dependency, but the optional extra is reserved so users can opt into the provider surface explicitly:
 
@@ -138,14 +138,14 @@ Use `oauthpy auth login --provider gemini` or run `gemini` directly to configure
 
 - **Codex** uses the Codex CLI's provider/default model, but sends `model_reasoning_effort=low` through `--config` unless you override it.
 - **Claude Code** uses the documented `opus` model alias and `low` effort by default through `ClaudeAgentOptions(model="opus", effort="low")`.
-- **Gemini** uses the Gemini CLI's provider/default model and does not set reasoning effort because the CLI does not expose a documented reasoning-effort flag through oauthpy.
+- **Gemini** uses the Gemini CLI's `auto` model alias by default. This lets the upstream CLI choose the model while oauthpy still exposes explicit model selection; reasoning-effort or thinking-budget is not exposed because the CLI does not document a stable flag through oauthpy.
 
 Override the model with the shared `model=` argument:
 
 ```python
 Client("codex").run("summarize", cwd=".", model="gpt-5.3-codex")
 Client("claude").run("summarize", cwd=".", model="sonnet")
-Client("gemini").run("summarize", cwd=".", model="gemini-2.5-flash")
+Client("gemini").run("summarize", cwd=".", model="pro")
 ```
 
 Override reasoning effort through provider options:
@@ -160,7 +160,7 @@ CLI equivalents:
 ```bash
 oauthpy run --provider codex --reasoning-effort high "review this repo"
 oauthpy run --provider claude --model sonnet --reasoning-effort low "summarize this repo"
-oauthpy run --provider gemini --model gemini-2.5-flash "summarize this repo"
+oauthpy run --provider gemini --model flash-lite "summarize this repo"
 ```
 
 Interactive helpers mirror the upstream naming:
@@ -168,7 +168,7 @@ Interactive helpers mirror the upstream naming:
 - Codex reasoning efforts: `minimal`, `low`, `medium`, `high`, `xhigh`.
 - Claude effort levels: `low`, `medium`, `high`, `xhigh`, `max`.
 - Claude model aliases include `default`, `best`, `sonnet`, `opus`, `haiku`, `sonnet[1m]`, `opus[1m]`, and `opusplan`.
-- Gemini model examples include `gemini-2.5-pro` and `gemini-2.5-flash`.
+- Gemini model aliases/examples include `auto`, `pro`, `flash`, `flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
 
 Inside `oauthpy interactive`, use `/model NAME`, `/model clear`, `/effort LEVEL`, `/effort clear`, `/models`, and `/efforts`.
 

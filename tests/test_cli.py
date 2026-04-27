@@ -54,6 +54,8 @@ def test_interactive_slash_completion_candidates() -> None:
     assert ("high", -1) in _completion_matches("/effort h")
     assert ("sonnet", -1) in _completion_matches("/model s")
     assert ("gemini-2.5-flash", -1) in _completion_matches("/model g")
+    assert ("flash", -2) in _completion_matches("/model fl")
+    assert ("flash-lite", -2) in _completion_matches("/model fl")
 
 
 def test_interactive_enter_accepts_unique_command_prefix() -> None:

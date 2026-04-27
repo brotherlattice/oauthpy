@@ -9,6 +9,7 @@ import pytest
 
 from oauthpy import AuthRequiredError, EventKind, ProtocolError, ProviderNotInstalledError
 from oauthpy._subprocess import CompletedProcess
+from oauthpy.defaults import DEFAULT_GEMINI_MODEL
 from oauthpy.providers import gemini as gemini_mod
 
 
@@ -82,6 +83,7 @@ async def test_auth_status_settings_login_state_is_best_effort(
         '{"security": {"auth": {"selectedType": "oauth-personal"}}}',
         encoding="utf-8",
     )
+    monkeypatch.setattr(gemini_mod, "_gemini_config_dir", lambda: gemini_dir)
     provider = gemini_mod.GeminiProvider(auth_source="auto")
     status = await provider.auth_status()
     assert status.authenticated is True
@@ -159,6 +161,23 @@ async def test_run_streams_and_aggregates(monkeypatch: pytest.MonkeyPatch, clean
     assert result.usage.input_tokens == 2
     assert result.usage.output_tokens == 3
     assert result.usage.total_tokens == 5
+
+
+async def test_run_defaults_to_auto_model(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _binary: "/usr/bin/gemini")
+    captured: dict[str, object] = {}
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        captured["argv"] = argv
+        yield '{"type": "result", "response": "ok"}'
+
+    monkeypatch.setattr(gemini_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = gemini_mod.GeminiProvider(auth_source="external")
+    await provider.run("p")
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert "--model" in argv
+    assert DEFAULT_GEMINI_MODEL in argv
 
 
 async def test_json_output_object_is_supported(

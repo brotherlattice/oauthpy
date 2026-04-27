@@ -5,6 +5,7 @@ from __future__ import annotations
 DEFAULT_CODEX_REASONING_EFFORT = "low"
 DEFAULT_CLAUDE_MODEL = "opus"
 DEFAULT_CLAUDE_REASONING_EFFORT = "low"
+DEFAULT_GEMINI_MODEL = "auto"
 
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 CLAUDE_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -30,8 +31,15 @@ CLAUDE_MODEL_ALIASES = (
     "opusplan",
 )
 GEMINI_MODEL_EXAMPLES = (
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
 )
 
 
@@ -43,6 +51,7 @@ __all__ = [
     "DEFAULT_CLAUDE_MODEL",
     "DEFAULT_CLAUDE_REASONING_EFFORT",
     "DEFAULT_CODEX_REASONING_EFFORT",
+    "DEFAULT_GEMINI_MODEL",
     "GEMINI_MODEL_EXAMPLES",
     "REASONING_EFFORTS",
 ]

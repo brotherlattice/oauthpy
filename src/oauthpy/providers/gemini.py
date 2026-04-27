@@ -11,6 +11,7 @@ from typing import Any
 from .. import _subprocess
 from .._redact import redact
 from ..auth import normalize_auth_source, provider_state_dir, resolve_oauthpy_home
+from ..defaults import DEFAULT_GEMINI_MODEL
 from ..errors import (
     AuthRequiredError,
     CommandExecutionError,
@@ -252,8 +253,7 @@ class GeminiProvider(Provider):
             raise ProtocolError("Gemini output_format must be 'stream-json' or 'json'.")
 
         argv = [self._binary, "--prompt", prompt, "--output-format", output_format]
-        if model:
-            argv.extend(["--model", model])
+        argv.extend(["--model", model or DEFAULT_GEMINI_MODEL])
         if cwd is not None and options.pop("include_cwd", False):
             argv.extend(["--include-directories", os.fspath(cwd)])
         if options.pop("all_files", False):

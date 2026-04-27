@@ -127,6 +127,8 @@ The raw SDK object is always on `Event.raw`, so callers who want strict typing c
 
 **Auth isolation**: Gemini currently uses external CLI state only. The official CLI documents `~/.gemini`, project `.gemini`, and env auth, but no safe config/auth-root override equivalent to `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. `auth_source="oauthpy"` is therefore reported as unsupported.
 
+**Model default**: oauthpy passes `--model auto` unless the shared `model=` argument is set. This delegates model choice to the Gemini CLI while preserving explicit `model=` overrides; thinking-budget control is not exposed because Gemini CLI does not document a stable reasoning-effort flag.
+
 **Supported `provider_options` keys**:
 
 | Key | Maps to `gemini` flag |

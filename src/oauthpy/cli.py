@@ -30,6 +30,7 @@ from .defaults import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CLAUDE_REASONING_EFFORT,
     DEFAULT_CODEX_REASONING_EFFORT,
+    DEFAULT_GEMINI_MODEL,
     GEMINI_MODEL_EXAMPLES,
     REASONING_EFFORTS,
 )
@@ -426,6 +427,8 @@ def _model_status(state: _InteractiveState) -> str:
         return f"model={state.model}"
     if state.provider == "claude":
         return f"model=<default {DEFAULT_CLAUDE_MODEL}>"
+    if state.provider == "gemini":
+        return f"model=<default {DEFAULT_GEMINI_MODEL}>"
     return "model=<provider default>"
 
 
@@ -472,7 +475,7 @@ def _print_model_help(provider: ProviderName, *, file: TextIO) -> None:
         print(
             "Gemini model examples: "
             + ", ".join(GEMINI_MODEL_EXAMPLES)
-            + " (oauthpy otherwise lets Gemini CLI choose its provider default)",
+            + f" (oauthpy default: {DEFAULT_GEMINI_MODEL})",
             file=file,
         )
         print("Use /model NAME, /model clear, or start with --model NAME.", file=file)

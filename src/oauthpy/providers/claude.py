@@ -6,11 +6,16 @@ import asyncio
 import importlib
 import inspect
 import json
+import logging
 import os
-from collections.abc import AsyncIterator, Mapping
+import re
+from collections import deque
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from typing import Any
 
 from .. import _subprocess
+from .._redact import redact
 from ..auth import (
     ensure_private_dir,
     normalize_auth_source,
@@ -35,6 +40,86 @@ _CLAUDE_CLOUD_ENV_KEYS = (
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
 )
+_CLAUDE_SDK_QUERY_LOGGER = "claude_agent_sdk._internal.query"
+_DIAGNOSTIC_TAIL_CHARS = 4000
+_DIAGNOSTIC_TAIL_LINES = 80
+_EXIT_CODE_RE = re.compile(
+    r"(?:exit(?:ed)?(?:\s+with)?\s+code|exit\s*code)[:\s]+(-?\d+)",
+    re.IGNORECASE,
+)
+
+
+class _TailBuffer:
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque(maxlen=_DIAGNOSTIC_TAIL_LINES)
+
+    def append(self, value: Any) -> None:
+        line = redact(value).strip()
+        if not line:
+            return
+        self._lines.append(line[-_DIAGNOSTIC_TAIL_CHARS:])
+
+    def text(self) -> str:
+        return "\n".join(self._lines)[-_DIAGNOSTIC_TAIL_CHARS:]
+
+
+class _ClaudeDiagnostics(logging.Handler):
+    """Capture noisy Claude SDK internals without letting them propagate."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self._sdk_logs = _TailBuffer()
+        self._stderr = _TailBuffer()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.add_sdk_log(f"{record.levelname}: {record.getMessage()}")
+        except Exception:  # pragma: no cover - logging must never break a run
+            pass
+
+    def add_sdk_log(self, line: Any) -> None:
+        self._sdk_logs.append(line)
+
+    def add_stderr(self, line: Any) -> None:
+        self._stderr.append(line)
+
+    def stderr_callback(self, user_callback: Any) -> Callable[[str], None]:
+        def _callback(line: str) -> None:
+            self.add_stderr(line)
+            if user_callback is None:
+                return
+            try:
+                user_callback(line)
+            except Exception as exc:  # pragma: no cover - defensive callback isolation
+                self.add_sdk_log(f"stderr callback failed: {exc}")
+
+        return _callback
+
+    @contextmanager
+    def capture_sdk_logger(self) -> Iterator[None]:
+        logger = logging.getLogger(_CLAUDE_SDK_QUERY_LOGGER)
+        previous_propagate = logger.propagate
+        previous_level = logger.level
+        previous_disabled = logger.disabled
+        logger.addHandler(self)
+        logger.propagate = False
+        logger.disabled = False
+        if logger.level > logging.ERROR:
+            logger.setLevel(logging.ERROR)
+        try:
+            yield
+        finally:
+            with suppress(ValueError):
+                logger.removeHandler(self)
+            logger.propagate = previous_propagate
+            logger.setLevel(previous_level)
+            logger.disabled = previous_disabled
+
+    def sdk_log_tail(self) -> str:
+        return self._sdk_logs.text()
+
+    def stderr_tail(self) -> str:
+        return self._stderr.text()
 
 
 def _sdk() -> tuple[Any, Any] | None:
@@ -164,11 +249,13 @@ def _build_options(
     model: str | None,
     provider_options: Mapping[str, Any] | None,
     env: Mapping[str, str] | None,
+    diagnostics: _ClaudeDiagnostics | None = None,
 ) -> Any:
     """Construct ``ClaudeAgentOptions`` from oauthpy's run args."""
 
     kwargs: dict[str, Any] = {}
     options = dict(provider_options or {})
+    user_stderr = options.pop("stderr", None)
     if cwd is not None:
         kwargs["cwd"] = os.fspath(cwd)
     if model is not None:
@@ -184,6 +271,10 @@ def _build_options(
         merged_env = dict(kwargs.get("env") or {})
         merged_env.update(env)
         kwargs["env"] = merged_env
+    if diagnostics is not None:
+        kwargs["stderr"] = diagnostics.stderr_callback(user_stderr)
+    elif user_stderr is not None:
+        kwargs["stderr"] = user_stderr
     try:
         return options_cls(**kwargs)
     except TypeError as exc:
@@ -497,23 +588,24 @@ class ClaudeProvider(Provider):
             )
         source = await self._resolve_run_source()
         query, options_cls = sdk
+        diagnostics = _ClaudeDiagnostics()
         options = _build_options(
             options_cls,
             cwd=cwd,
             model=model,
             provider_options=provider_options,
             env=self._sdk_env(source, env),
+            diagnostics=diagnostics,
         )
-
-        stream_obj = query(prompt=prompt, options=options)
-        if inspect.iscoroutine(stream_obj):
-            stream_obj = await stream_obj
 
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else (loop.time() + timeout)
-        iterator = stream_obj.__aiter__()
+        stream_obj: Any | None = None
+        iterator: AsyncIterator[Any] | None = None
 
         async def _next_msg() -> Any:
+            if iterator is None:  # pragma: no cover - defensive internal guard
+                raise RuntimeError("claude-agent-sdk stream was not initialized")
             if deadline is None:
                 return await iterator.__anext__()
             remaining = deadline - loop.time()
@@ -525,23 +617,39 @@ class ClaudeProvider(Provider):
                 raise TimeoutExceededError(f"claude stream timed out after {timeout}s") from exc
 
         emitted_done = False
-        try:
-            while True:
-                try:
-                    msg = await _next_msg()
-                except StopAsyncIteration:
-                    break
-                for event in _events_from_sdk_message(msg):
-                    if event.kind is EventKind.DONE:
-                        emitted_done = True
-                    yield event
-        finally:
-            aclose = getattr(stream_obj, "aclose", None)
-            if aclose is not None:
-                try:
-                    await aclose()
-                except Exception:  # pragma: no cover - best-effort cleanup
-                    pass
+        with diagnostics.capture_sdk_logger():
+            try:
+                stream_obj = query(prompt=prompt, options=options)
+                if inspect.iscoroutine(stream_obj):
+                    stream_obj = await stream_obj
+                iterator = stream_obj.__aiter__()
+
+                while True:
+                    try:
+                        msg = await _next_msg()
+                    except StopAsyncIteration:
+                        break
+                    error_text = _sdk_error_payload_text(msg)
+                    if error_text:
+                        raise RuntimeError(error_text)
+                    for event in _events_from_sdk_message(msg):
+                        if event.kind is EventKind.DONE:
+                            emitted_done = True
+                        yield event
+            except (CommandExecutionError, TimeoutExceededError):
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise _claude_runtime_error(exc, diagnostics) from exc
+            finally:
+                if stream_obj is not None:
+                    aclose = getattr(stream_obj, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:  # pragma: no cover - best-effort cleanup
+                            pass
 
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
@@ -612,6 +720,56 @@ def _join_strs(value: Any) -> str | None:
         parts = [part for part in value if isinstance(part, str) and part]
         return "\n".join(parts) if parts else None
     return value if isinstance(value, str) and value else None
+
+
+def _sdk_error_payload_text(msg: Any) -> str | None:
+    if not isinstance(msg, Mapping):
+        return None
+    if msg.get("type") != "error" and "error" not in msg:
+        return None
+    return _error_text(msg.get("error") or msg.get("message") or msg)
+
+
+def _error_text(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, Mapping):
+        return _first_str(
+            value.get("message"),
+            value.get("error"),
+            value.get("type"),
+            value.get("code"),
+        )
+    return str(value) if value else None
+
+
+def _claude_runtime_error(exc: Exception, diagnostics: _ClaudeDiagnostics) -> CommandExecutionError:
+    message = f"claude-agent-sdk run failed: {exc or type(exc).__name__}"
+    sdk_logs = diagnostics.sdk_log_tail()
+    if sdk_logs:
+        message += f"\nclaude-agent-sdk logs:\n{sdk_logs}"
+    stderr = diagnostics.stderr_tail()
+    if stderr:
+        message += f"\nclaude stderr:\n{stderr}"
+    return CommandExecutionError(
+        redact(message),
+        returncode=_returncode_from_exception(exc),
+        stderr=stderr or None,
+    )
+
+
+def _returncode_from_exception(exc: Exception) -> int | None:
+    for attr in ("returncode", "exit_code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    match = _EXIT_CODE_RE.search(str(exc))
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:  # pragma: no cover - guarded by regex
+        return None
 
 
 def _usage_from_mapping(raw: Mapping[str, Any], cost: Any = None) -> Usage:

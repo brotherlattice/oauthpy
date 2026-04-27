@@ -7,11 +7,18 @@ Claude install.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 
 import pytest
 
-from oauthpy import EventKind, ProviderNotInstalledError
+from oauthpy import (
+    CommandExecutionError,
+    EventKind,
+    ProviderNotInstalledError,
+    TimeoutExceededError,
+)
 from oauthpy._subprocess import CompletedProcess
 from oauthpy.defaults import DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT
 from oauthpy.providers import claude as claude_mod
@@ -337,3 +344,140 @@ async def test_result_message_usage_and_cost_extracted(fake_sdk: list, clean_env
     assert result.usage.output_tokens == 6
     assert result.usage.total_tokens == 10
     assert result.usage.cost_usd == 0.12
+
+
+async def test_sdk_reader_failure_wrapped_with_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    logger = logging.getLogger("claude_agent_sdk._internal.query")
+    caplog.set_level(logging.ERROR)
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        assert callable(options.stderr)
+        logger.error("Fatal error in message reader: Command failed with exit code 1")
+        options.stderr("raw claude stderr: permission denied")
+        raise RuntimeError("Command failed with exit code 1")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run("boom")
+
+    message = str(excinfo.value)
+    assert "claude-agent-sdk run failed: Command failed with exit code 1" in message
+    assert "claude-agent-sdk logs:" in message
+    assert "Fatal error in message reader: Command failed with exit code 1" in message
+    assert "claude stderr:" in message
+    assert "raw claude stderr: permission denied" in message
+    assert excinfo.value.returncode == 1
+    assert excinfo.value.stderr == "raw claude stderr: permission denied"
+    assert not any(
+        "Fatal error in message reader" in record.getMessage() for record in caplog.records
+    )
+
+
+async def test_caller_stderr_callback_still_runs(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    seen: list[str] = []
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        assert callable(options.stderr)
+        options.stderr("claude stderr line")
+        yield fake_claude_sdk.ResultMessage(result="ok")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    result = await provider.run("hello", provider_options={"stderr": seen.append})
+    assert result.text == "ok"
+    assert seen == ["claude stderr line"]
+
+
+async def test_sdk_failure_diagnostics_are_redacted(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    secret = "sk-ant-abcdefghijklmnopqrstuvwxyz1234"
+    logger = logging.getLogger("claude_agent_sdk._internal.query")
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        assert callable(options.stderr)
+        logger.error("Fatal token %s", secret)
+        options.stderr(f"raw claude stderr: Bearer abc.def.ghi {secret}")
+        raise RuntimeError(f"Command failed with exit code 1: {secret}")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run("boom")
+
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "Bearer abc.def.ghi" not in message
+    assert "***REDACTED***" in message
+    assert secret not in (excinfo.value.stderr or "")
+
+
+async def test_sdk_error_payload_raises_command_execution_error(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        yield {"type": "error", "error": "reader failed"}
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run("boom")
+    assert "reader failed" in str(excinfo.value)
+
+
+async def test_sdk_timeout_is_not_wrapped(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        await asyncio.sleep(1)
+        yield fake_claude_sdk.ResultMessage(result="never")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(TimeoutExceededError):
+        await provider.run("slow", timeout=0.001)
+
+
+async def test_existing_command_execution_error_is_not_wrapped(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        raise CommandExecutionError("already structured", returncode=7, stderr="raw stderr")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run("boom")
+    assert str(excinfo.value) == "already structured"
+    assert excinfo.value.returncode == 7
+    assert excinfo.value.stderr == "raw stderr"

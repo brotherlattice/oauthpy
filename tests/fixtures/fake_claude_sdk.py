@@ -17,6 +17,7 @@ class ClaudeAgentOptions:
     model: str | None = None
     effort: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    stderr: Any | None = None
     allowed_tools: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -25,6 +26,7 @@ class ClaudeAgentOptions:
         self.model = kwargs.pop("model", None)
         self.effort = kwargs.pop("effort", None)
         self.env = kwargs.pop("env", {})
+        self.stderr = kwargs.pop("stderr", None)
         self.allowed_tools = kwargs.pop("allowed_tools", [])
         self.extra = kwargs
 

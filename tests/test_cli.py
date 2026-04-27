@@ -10,7 +10,14 @@ from collections.abc import AsyncIterator
 import pytest
 
 from oauthpy._subprocess import CompletedProcess
-from oauthpy.cli import _completion_matches, _interactive_banner, _prompt_toolkit_input, main
+from oauthpy.cli import (
+    _completion_matches,
+    _handle_interactive_line,
+    _interactive_banner,
+    _InteractiveState,
+    _prompt_toolkit_input,
+    main,
+)
 from oauthpy.providers import claude as claude_mod
 from oauthpy.providers import codex as codex_mod
 
@@ -43,6 +50,19 @@ def test_interactive_slash_completion_candidates() -> None:
     assert ("claude", 0) in _completion_matches("/provider ")
     assert ("high", -1) in _completion_matches("/effort h")
     assert ("sonnet", -1) in _completion_matches("/model s")
+
+
+def test_interactive_enter_accepts_unique_command_prefix() -> None:
+    state = _InteractiveState(provider="codex", source="external")
+    assert _handle_interactive_line(state, "/ex") is True
+
+
+def test_interactive_enter_rejects_ambiguous_command_prefix(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _InteractiveState(provider="codex", source="external")
+    assert _handle_interactive_line(state, "/e") is False
+    assert "ambiguous command: /e" in capsys.readouterr().err
 
 
 def test_interactive_banner_mentions_completion(monkeypatch: pytest.MonkeyPatch) -> None:

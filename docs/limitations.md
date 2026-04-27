@@ -23,7 +23,7 @@
 - **Copying or importing tokens by default.** `oauthpy` never copies existing vendor credentials into `~/.oauthpy/` automatically.
 - **Editing normal vendor credential files.** `oauthpy` does not directly edit `~/.codex/auth.json` or Claude credential files. It may create provider-owned config files under `~/.oauthpy/` so the official tools can operate there.
 - **HTTP proxy/server.** The library is the product. A future proxy could wrap it; v0.1 does not include one.
-- **Full conversational session management.** `oauthpy chat` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
+- **Full conversational session management.** `oauthpy interactive` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
 
 ## Compliance notes
 

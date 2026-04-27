@@ -485,8 +485,8 @@ class ClaudeProvider(Provider):
         sdk = _sdk()
         if sdk is None:
             raise ProviderNotInstalledError(
-                "claude-agent-sdk is not installed. Run `pip install claude-agent-sdk` "
-                "or `pip install oauthpy[claude]`."
+                "claude-agent-sdk is not installed. Reinstall oauthpy or run "
+                "`pip install claude-agent-sdk`."
             )
         source = await self._resolve_run_source()
         query, options_cls = sdk
@@ -546,10 +546,13 @@ class ClaudeProvider(Provider):
     def _oauthpy_state_plausible(self) -> bool:
         if not self._claude_config_dir.exists():
             return False
-        return any(
-            (self._claude_config_dir / name).exists()
-            for name in (".credentials.json", ".claude.json", "settings.json", "projects")
-        ) or (self._claude_config_dir / ".claude" / ".credentials.json").exists()
+        return (
+            any(
+                (self._claude_config_dir / name).exists()
+                for name in (".credentials.json", ".claude.json", "settings.json", "projects")
+            )
+            or (self._claude_config_dir / ".claude" / ".credentials.json").exists()
+        )
 
     def _subprocess_env(self, source: AuthSource) -> dict[str, str | None] | None:
         if source != "oauthpy":

@@ -77,9 +77,7 @@ async def test_login_missing_cli_raises(
         await provider.login()
 
 
-async def test_auth_status_no_sdk_no_cli(
-    monkeypatch: pytest.MonkeyPatch, clean_env: None
-) -> None:
+async def test_auth_status_no_sdk_no_cli(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
     monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
     monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: None)
     provider = claude_mod.ClaudeProvider(auth_source="external")

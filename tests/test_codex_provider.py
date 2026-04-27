@@ -298,8 +298,7 @@ async def test_auto_prefers_authenticated_oauthpy_source(
     provider = codex_mod.CodexProvider(auth_source="auto", oauthpy_home=tmp_path)
     await provider.run("p")
     assert any(
-        isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home)
-        for env in seen_envs
+        isinstance(env, dict) and env.get("CODEX_HOME") == str(codex_home) for env in seen_envs
     )
 
 

@@ -1,7 +1,7 @@
 """One-shot prompt to Claude via `claude-agent-sdk`.
 
 Prerequisite:
-    1. `pip install claude-agent-sdk` (or `pip install oauthpy[claude]`)
+    1. `pip install oauthpy`
     2. Configure auth:
        * `oauthpy auth login --provider claude`
        * or reuse an existing Claude Code login with `auth_source="external"`

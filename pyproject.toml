@@ -25,17 +25,13 @@ classifiers = [
 ]
 dependencies = [
     "typing-extensions>=4.8.0; python_version<'3.12'",
+    "claude-agent-sdk>=0.1.65",
 ]
 
 [project.scripts]
 oauthpy = "oauthpy.cli:main"
 
 [project.optional-dependencies]
-claude = [
-    "claude-agent-sdk>=0.1.65",
-]
-codex = [
-]
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -60,7 +56,6 @@ dev = [
     "pytest-timeout>=2.3.1",
     "ruff==0.8.6",
     "twine>=5.1.0",
-    "claude-agent-sdk>=0.1.65",
 ]
 
 [project.urls]

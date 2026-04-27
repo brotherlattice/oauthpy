@@ -21,6 +21,7 @@ def no_real_provider_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError(f"test attempted real provider discovery for {binary!r}")
 
     monkeypatch.setattr(codex_mod._subprocess, "which", fail_unmocked_which)
+    monkeypatch.setattr(claude_mod._subprocess, "which", fail_unmocked_which)
 
 
 def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
@@ -96,7 +97,88 @@ def test_run_accepts_source_external(
     assert "external out" in capsys.readouterr().out
 
 
-def test_experimental_chat_reconstructs_transcript(
+def test_interactive_repl_commands(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _b: "/usr/local/bin/codex")
+    prompts: list[str] = []
+    kwargs_seen: list[dict[str, object]] = []
+    login_calls: list[list[str]] = []
+
+    async def fake_run(argv: list[str], **_: object) -> CompletedProcess:
+        return CompletedProcess(returncode=0, stdout="Logged in using ChatGPT", stderr="")
+
+    async def fake_run_interactive(argv: list[str], **_: object) -> CompletedProcess:
+        login_calls.append(argv)
+        return CompletedProcess(returncode=0, stdout="", stderr="")
+
+    async def fake_stream_lines(argv: list[str], **kwargs: object) -> AsyncIterator[str]:
+        prompts.append(argv[-1])
+        kwargs_seen.append(kwargs)
+        yield '{"type": "reasoning", "text": "thinking"}'
+        yield '{"type": "agent_message", "text": "assistant out"}'
+        yield '{"type": "task_complete"}'
+
+    inputs = iter(
+        [
+            "/status",
+            "/available",
+            "/login external",
+            "/cwd /tmp/work",
+            "/model gpt-test",
+            "/timeout 12.5",
+            "/events on",
+            "/run one shot",
+            "/stream streamed",
+            "first",
+            "/clear",
+            "/source external",
+            "/provider claude",
+            "/help",
+            "/exit",
+        ]
+    )
+
+    monkeypatch.setattr(codex_mod._subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_mod._subprocess, "run_interactive", fake_run_interactive)
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+
+    rc = main(["interactive", "--provider", "codex", "--source", "external"])
+    assert rc == 0
+    assert prompts[0] == "one shot"
+    assert prompts[1] == "streamed"
+    assert prompts[2] == "first"
+    assert login_calls == [["codex", "login"]]
+    assert all(kwargs["cwd"] == "/tmp/work" for kwargs in kwargs_seen)
+
+    out = capsys.readouterr()
+    assert "codex> assistant out" in out.out
+    assert "[message] assistant out" in out.out
+    assert "provider=codex installed=True authenticated=True mode=oauth" in out.err
+    assert "yes" in out.err
+    assert "login completed provider=codex source=external" in out.err
+    assert "cwd=/tmp/work" in out.err
+    assert "model=gpt-test" in out.err
+    assert "timeout=12.5" in out.err
+    assert "events=on" in out.err
+    assert "[reasoning] thinking" in out.err
+    assert "transcript cleared" in out.err
+    assert "source set to external; transcript cleared" in out.err
+    assert "provider set to claude; transcript cleared" in out.err
+    assert "Commands:" in out.err
+
+
+def test_interactive_eof_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr(builtins, "input", raise_eof)
+    rc = main(["interactive", "--provider", "codex"])
+    assert rc == 0
+
+
+def test_chat_alias_reconstructs_transcript(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(codex_mod._subprocess, "which", lambda _b: "/usr/local/bin/codex")

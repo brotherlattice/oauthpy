@@ -35,7 +35,7 @@ In scope for v0.1:
 - `Client.login()` that shells out to the provider's official login flow.
 - `Client.available()` installed/provider-ready check.
 - Auth-source selection: `auto`, `oauthpy`, or `external`.
-- A tiny debugging CLI (`oauthpy run`, `oauthpy auth login`, `oauthpy auth status`, `oauthpy available`, `oauthpy chat`).
+- A tiny debugging CLI (`oauthpy run`, `oauthpy interactive`, `oauthpy auth login`, `oauthpy auth status`, `oauthpy available`).
 
 Out of scope for v0.1:
 
@@ -43,15 +43,13 @@ Out of scope for v0.1:
 - Reverse-engineering vendor web endpoints.
 - Scraping TUI output.
 - Wire-compatibility with vendor cloud APIs.
-- Persistent multi-turn session management. `oauthpy chat` is only a local in-memory debugging facade.
+- Persistent multi-turn session management. `oauthpy interactive` is only a local in-memory debugging facade.
 - Editing `~/.codex/auth.json` or Claude credential files directly.
 
 ## Installation
 
 ```bash
 python -m pip install oauthpy
-# or, with the Claude provider dependency included:
-python -m pip install "oauthpy[claude]"
 ```
 
 Python 3.10+. Cross-platform (Windows, Linux, macOS).
@@ -67,7 +65,7 @@ Python 3.10+. Cross-platform (Windows, Linux, macOS).
 Provider-specific auth isolation:
 
 - **Codex** — install the `codex` CLI (`npm i -g @openai/codex`). In `oauthpy` source mode, oauthpy sets `CODEX_HOME=~/.oauthpy/codex` and ensures `config.toml` contains `cli_auth_credentials_store = "file"` unless you already set a supported value (`file`, `keyring`, or `auto`).
-- **Claude** — install the Claude Code CLI and `claude-agent-sdk` (`pip install "oauthpy[claude]"`). In `oauthpy` source mode, oauthpy sets `CLAUDE_CONFIG_DIR=~/.oauthpy/claude` for CLI status/login and SDK runs.
+- **Claude** — install the Claude Code CLI. The Python `claude-agent-sdk` dependency is installed with oauthpy by default. In `oauthpy` source mode, oauthpy sets `CLAUDE_CONFIG_DIR=~/.oauthpy/claude` for CLI status/login and SDK runs.
 
 Normal Claude login uses `claude auth login`. `claude setup-token` is a separate headless/CI helper that prints a long-lived token; oauthpy does not use it for regular login.
 
@@ -125,7 +123,33 @@ oauthpy auth login --provider codex          # defaults to --source oauthpy
 oauthpy auth login --provider claude --source external
 oauthpy auth status --provider codex --source auto
 oauthpy run --provider claude --source oauthpy "summarize this repo"
+oauthpy interactive --provider codex --source auto --cwd .
 ```
+
+## Interactive CLI
+
+Use `oauthpy interactive` to debug setup and try repeated prompts without writing Python:
+
+```bash
+oauthpy interactive --provider codex --source auto --cwd .
+oauthpy interactive --provider claude --source auto --cwd .
+```
+
+Plain text sends a transcript-aware chat turn. Slash commands handle setup and diagnostics: `/status`, `/available`, `/login`, `/provider`, `/source`, `/cwd`, `/model`, `/timeout`, `/events`, `/run`, `/stream`, `/clear`, `/help`, and `/exit`.
+
+Example Claude session:
+
+```text
+$ oauthpy interactive --provider claude --source auto --cwd .
+oauthpy interactive. Type /help for commands; /exit to quit.
+oauthpy[claude:auto]> Hello, is claude code ready?
+claude> Yes, Claude Code is ready! How can I help you today?
+oauthpy[claude:auto]>
+```
+
+In this example, `--source auto` does not ask oauthpy to implement OAuth itself. It asks oauthpy to resolve local auth state: first use authenticated isolated Claude Code config under `~/.oauthpy/claude` if present, otherwise fall back to the normal Claude Code CLI/session auth on the machine. oauthpy passes the resolved non-secret environment/config location to the official Claude Code CLI/SDK and never prints token values.
+
+`oauthpy chat` remains as a compatibility alias for the same local in-memory interaction mode.
 
 ## CLI setup debugging walk-through
 
@@ -136,7 +160,7 @@ Create a clean environment and install oauthpy:
 ```bash
 conda create -y -n oauthpy python=3.12 pip
 conda activate oauthpy
-python -m pip install -e ".[claude,dev]"
+python -m pip install -e ".[dev]"
 python -c "from oauthpy import Client; print(Client)"
 oauthpy --help
 ```
@@ -155,6 +179,7 @@ oauthpy auth status --provider codex --source auto --json
 oauthpy auth status --provider claude --source auto --json
 oauthpy available --provider codex
 oauthpy available --provider claude
+oauthpy interactive --provider codex --source auto --cwd .
 ```
 
 If either provider is unauthenticated, use oauthpy-isolated login by default:

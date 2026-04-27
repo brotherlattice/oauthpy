@@ -287,13 +287,16 @@ async def stream_lines(
                         break
                     yield line.decode("utf-8", errors="replace").rstrip("\r\n")
         finally:
+            stderr_bytes = b""
             if completed:
-                await proc.wait()
+                _, stderr_bytes = await asyncio.gather(proc.wait(), stderr_task)
             elif proc.returncode is None:
                 killed = True
                 await _kill(proc)
                 await proc.wait()
-            stderr_bytes = await stderr_task
+                stderr_bytes = await stderr_task
+            else:
+                stderr_bytes = await stderr_task
             if proc.returncode not in (0, None) and not killed:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace")
                 raise CommandExecutionError(

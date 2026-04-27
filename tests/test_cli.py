@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from oauthpy._subprocess import CompletedProcess
-from oauthpy.cli import main
+from oauthpy.cli import _completion_matches, main
 from oauthpy.providers import claude as claude_mod
 from oauthpy.providers import codex as codex_mod
 
@@ -30,6 +30,15 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
     assert "usage:" in out.lower() or "oauthpy" in out.lower()
+
+
+def test_interactive_slash_completion_candidates() -> None:
+    command_matches = _completion_matches("/h")
+    assert ("/help", -2) in command_matches
+    assert _completion_matches("hello") == []
+    assert ("codex", -1) in _completion_matches("/provider c")
+    assert ("high", -1) in _completion_matches("/effort h")
+    assert ("sonnet", -1) in _completion_matches("/model s")
 
 
 def test_auth_status_json(

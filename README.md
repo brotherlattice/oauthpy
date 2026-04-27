@@ -106,6 +106,42 @@ print(result.text)
 
 Streaming is identical: `async for event in Client("claude").stream(prompt, cwd="."): ...`.
 
+## Model and reasoning defaults
+
+`oauthpy` applies lightweight per-run defaults without editing your vendor config files:
+
+- **Codex** uses the Codex CLI's provider/default model, but sends `model_reasoning_effort=low` through `--config` unless you override it.
+- **Claude Code** uses the documented `opus` model alias and `low` effort by default through `ClaudeAgentOptions(model="opus", effort="low")`.
+
+Override the model with the shared `model=` argument:
+
+```python
+Client("codex").run("summarize", cwd=".", model="gpt-5.3-codex")
+Client("claude").run("summarize", cwd=".", model="sonnet")
+```
+
+Override reasoning effort through provider options:
+
+```python
+Client("codex").run("deep review", provider_options={"reasoning_effort": "high"})
+Client("claude").run("deep review", provider_options={"reasoning_effort": "high"})
+```
+
+CLI equivalents:
+
+```bash
+oauthpy run --provider codex --reasoning-effort high "review this repo"
+oauthpy run --provider claude --model sonnet --reasoning-effort low "summarize this repo"
+```
+
+Interactive helpers mirror the upstream naming:
+
+- Codex reasoning efforts: `minimal`, `low`, `medium`, `high`, `xhigh`.
+- Claude effort levels: `low`, `medium`, `high`, `xhigh`, `max`.
+- Claude model aliases include `default`, `best`, `sonnet`, `opus`, `haiku`, `sonnet[1m]`, `opus[1m]`, and `opusplan`.
+
+Inside `oauthpy interactive`, use `/model NAME`, `/model clear`, `/effort LEVEL`, `/effort clear`, `/models`, and `/efforts`.
+
 ## Auth-source selection
 
 `Client(provider, auth_source="auto", oauthpy_home=None)` keeps the shared API small while making auth state explicit:
@@ -135,7 +171,9 @@ oauthpy interactive --provider codex --source auto --cwd .
 oauthpy interactive --provider claude --source auto --cwd .
 ```
 
-Plain text sends a transcript-aware chat turn. Slash commands handle setup and diagnostics: `/status`, `/available`, `/login`, `/provider`, `/source`, `/cwd`, `/model`, `/timeout`, `/events`, `/run`, `/stream`, `/clear`, `/help`, and `/exit`.
+Plain text sends a transcript-aware chat turn. Slash commands handle setup and diagnostics: `/status`, `/available`, `/login`, `/provider`, `/source`, `/cwd`, `/model`, `/models`, `/effort`, `/reasoning`, `/efforts`, `/timeout`, `/events`, `/run`, `/stream`, `/clear`, `/help`, and `/exit`.
+
+Slash-command tab completion is enabled when `prompt-toolkit` is installed. It is part of oauthpy's default install; if it is unavailable, the CLI falls back to standard `input()` without completion.
 
 Example Claude session:
 

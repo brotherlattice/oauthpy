@@ -9,12 +9,14 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from .. import _subprocess
+from .._redact import redact
 from ..auth import (
     ensure_private_dir,
     normalize_auth_source,
     provider_state_dir,
     resolve_oauthpy_home,
 )
+from ..defaults import DEFAULT_CODEX_REASONING_EFFORT
 from ..errors import (
     AuthRequiredError,
     CommandExecutionError,
@@ -206,6 +208,9 @@ class CodexProvider(Provider):
         options = dict(provider_options or {})
         if options.pop("skip_git_repo_check", False):
             argv.append("--skip-git-repo-check")
+        reasoning_effort = options.pop("reasoning_effort", None)
+        if reasoning_effort is None:
+            reasoning_effort = options.pop("model_reasoning_effort", DEFAULT_CODEX_REASONING_EFFORT)
         if model:
             argv.extend(["--model", model])
         if cwd is not None:
@@ -220,9 +225,13 @@ class CodexProvider(Provider):
         if approval:
             argv.extend(["--ask-for-approval", str(approval)])
         extra_config = options.pop("config", None)
+        config: dict[str, Any] = {}
         if isinstance(extra_config, Mapping):
-            for key, value in extra_config.items():
-                argv.extend(["--config", f"{key}={value}"])
+            config.update(extra_config)
+        if reasoning_effort is not None:
+            config.setdefault("model_reasoning_effort", reasoning_effort)
+        for key, value in config.items():
+            argv.extend(["--config", f"{key}={value}"])
         extra_argv = options.pop("extra_argv", None)
         if isinstance(extra_argv, list | tuple):
             argv.extend(str(a) for a in extra_argv)
@@ -437,7 +446,7 @@ class CodexProvider(Provider):
                 raise AuthRequiredError(
                     "codex is not logged in; run `oauthpy auth login --provider codex`."
                 ) from exc
-            raise ProtocolError(f"codex exec failed: {exc}") from exc
+            raise ProtocolError(_codex_exec_error_message(exc, source)) from exc
 
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
@@ -516,6 +525,15 @@ def _tomlish_string_value(raw: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1]
     return value
+
+
+def _codex_exec_error_message(exc: CommandExecutionError, source: AuthSource) -> str:
+    message = f"codex exec failed using auth_source={source}: {exc}"
+    stderr = (exc.stderr or "").strip()
+    if not stderr:
+        return message
+    tail = stderr[-2000:]
+    return f"{message}\nstderr:\n{redact(tail)}"
 
 
 def _usage_from_mapping(raw: Mapping[str, Any]) -> Usage:

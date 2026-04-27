@@ -22,6 +22,16 @@ from dataclasses import dataclass, field
 from typing import TextIO, cast, get_args
 
 from .client import Client
+from .defaults import (
+    CLAUDE_MODEL_ALIASES,
+    CLAUDE_REASONING_EFFORTS,
+    CODEX_MODEL_EXAMPLES,
+    CODEX_REASONING_EFFORTS,
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CLAUDE_REASONING_EFFORT,
+    DEFAULT_CODEX_REASONING_EFFORT,
+    REASONING_EFFORTS,
+)
 from .errors import OauthPyError
 from .models import AuthSource, AuthStatus, ProviderName, RunResult
 
@@ -51,6 +61,7 @@ def _make_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--source", default="auto", choices=_SOURCE_CHOICES)
     run_p.add_argument("--cwd", default=None)
     run_p.add_argument("--model", default=None)
+    run_p.add_argument("--reasoning-effort", default=None, choices=REASONING_EFFORTS)
     run_p.add_argument("--timeout", type=float, default=None)
     run_p.add_argument("--json", action="store_true", help="Emit JSON output")
     run_p.add_argument("prompt")
@@ -84,6 +95,7 @@ def _add_interactive_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", default="auto", choices=_SOURCE_CHOICES)
     parser.add_argument("--cwd", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--reasoning-effort", default=None, choices=REASONING_EFFORTS)
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--show-events", action="store_true")
 
@@ -117,6 +129,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         cwd=args.cwd,
         model=args.model,
         timeout=args.timeout,
+        provider_options=_provider_options(
+            cast(ProviderName, args.provider), args.reasoning_effort
+        ),
     )
     if args.json:
         payload = {
@@ -177,6 +192,7 @@ class _InteractiveState:
     source: AuthSource
     cwd: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
     timeout: float | None = None
     show_events: bool = False
     transcript: list[tuple[str, str]] = field(default_factory=list)
@@ -194,6 +210,7 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
         source=cast(AuthSource, args.source),
         cwd=args.cwd,
         model=args.model,
+        reasoning_effort=args.reasoning_effort,
         timeout=args.timeout,
         show_events=bool(args.show_events),
     )
@@ -203,7 +220,7 @@ def _cmd_interactive(args: argparse.Namespace) -> int:
     )
     while True:
         try:
-            user_text = input(state.prompt())
+            user_text = _read_interactive_input(state.prompt())
         except EOFError:
             print("", file=sys.stderr)
             return 0
@@ -246,6 +263,12 @@ def _handle_slash_command(state: _InteractiveState, command: str, rest: str) -> 
         ready = state.client().available()
         print("yes" if ready else "no", file=sys.stderr)
         return False
+    if command == "models":
+        _print_model_help(state.provider, file=sys.stderr)
+        return False
+    if command == "efforts":
+        _print_effort_help(state.provider, file=sys.stderr)
+        return False
     if command == "login":
         source = _login_source_for_interactive(state, rest)
         if source is None:
@@ -278,10 +301,13 @@ def _handle_slash_command(state: _InteractiveState, command: str, rest: str) -> 
         return False
     if command == "model":
         if not rest:
-            print(f"model={state.model or '<default>'}", file=sys.stderr)
+            print(_model_status(state), file=sys.stderr)
         else:
             state.model = None if rest == "clear" else rest
-            print(f"model={state.model or '<default>'}", file=sys.stderr)
+            print(_model_status(state), file=sys.stderr)
+        return False
+    if command in {"effort", "reasoning"}:
+        _set_reasoning_effort(state, rest)
         return False
     if command == "timeout":
         _set_timeout(state, rest)
@@ -339,6 +365,10 @@ def _print_interactive_help() -> None:
                 "  /source auto|oauthpy|external",
                 "  /cwd PATH | /cwd clear",
                 "  /model NAME | /model clear",
+                "  /models",
+                "  /effort LEVEL | /effort clear",
+                "  /reasoning LEVEL | /reasoning clear",
+                "  /efforts",
                 "  /timeout SECONDS | /timeout clear",
                 "  /events on|off",
                 "  /clear",
@@ -358,6 +388,74 @@ def _login_source_for_interactive(state: _InteractiveState, rest: str) -> AuthSo
         print(f"usage: /login {'|'.join(_LOGIN_SOURCE_CHOICES)}", file=sys.stderr)
         return None
     return cast(AuthSource, source)
+
+
+def _model_status(state: _InteractiveState) -> str:
+    if state.model:
+        return f"model={state.model}"
+    if state.provider == "claude":
+        return f"model=<default {DEFAULT_CLAUDE_MODEL}>"
+    return "model=<provider default>"
+
+
+def _set_reasoning_effort(state: _InteractiveState, rest: str) -> None:
+    if not rest:
+        print(_reasoning_status(state), file=sys.stderr)
+        return
+    if rest == "clear":
+        state.reasoning_effort = None
+        print(_reasoning_status(state), file=sys.stderr)
+        return
+    valid = CLAUDE_REASONING_EFFORTS if state.provider == "claude" else CODEX_REASONING_EFFORTS
+    if rest not in valid:
+        print(f"usage: /effort {'|'.join(valid)} | /effort clear", file=sys.stderr)
+        return
+    state.reasoning_effort = rest
+    print(_reasoning_status(state), file=sys.stderr)
+
+
+def _reasoning_status(state: _InteractiveState) -> str:
+    if state.reasoning_effort:
+        return f"reasoning_effort={state.reasoning_effort}"
+    if state.provider == "claude":
+        return f"reasoning_effort=<default {DEFAULT_CLAUDE_REASONING_EFFORT}>"
+    return f"reasoning_effort=<default {DEFAULT_CODEX_REASONING_EFFORT}>"
+
+
+def _print_model_help(provider: ProviderName, *, file: TextIO) -> None:
+    if provider == "claude":
+        print(
+            "Claude model aliases: "
+            + ", ".join(CLAUDE_MODEL_ALIASES)
+            + f" (oauthpy default: {DEFAULT_CLAUDE_MODEL})",
+            file=file,
+        )
+        print("Use /model NAME, /model clear, or start with --model NAME.", file=file)
+        return
+    print(
+        "Codex model examples: "
+        + ", ".join(CODEX_MODEL_EXAMPLES)
+        + " (oauthpy otherwise lets Codex choose its provider default)",
+        file=file,
+    )
+    print("Use /model NAME, /model clear, or start with --model NAME.", file=file)
+
+
+def _print_effort_help(provider: ProviderName, *, file: TextIO) -> None:
+    if provider == "claude":
+        print(
+            "Claude effort levels: "
+            + ", ".join(CLAUDE_REASONING_EFFORTS)
+            + f" (oauthpy default: {DEFAULT_CLAUDE_REASONING_EFFORT})",
+            file=file,
+        )
+        return
+    print(
+        "Codex reasoning efforts: "
+        + ", ".join(CODEX_REASONING_EFFORTS)
+        + f" (oauthpy default: {DEFAULT_CODEX_REASONING_EFFORT})",
+        file=file,
+    )
 
 
 def _set_timeout(state: _InteractiveState, rest: str) -> None:
@@ -398,6 +496,7 @@ def _run_one_shot(state: _InteractiveState, prompt: str) -> None:
         cwd=state.cwd,
         model=state.model,
         timeout=state.timeout,
+        provider_options=_provider_options(state.provider, state.reasoning_effort),
     )
     _print_run_result(state, result)
 
@@ -408,6 +507,7 @@ def _stream_one_shot(state: _InteractiveState, prompt: str) -> None:
         cwd=state.cwd,
         model=state.model,
         timeout=state.timeout,
+        provider_options=_provider_options(state.provider, state.reasoning_effort),
     ):
         text = f" {event.text}" if event.text else ""
         print(f"[{event.kind.value}]{text}")
@@ -420,6 +520,7 @@ def _run_chat_turn(state: _InteractiveState, user_text: str) -> None:
         cwd=state.cwd,
         model=state.model,
         timeout=state.timeout,
+        provider_options=_provider_options(state.provider, state.reasoning_effort),
     )
     _print_run_result(state, result)
     state.transcript.append(("user", user_text))
@@ -447,6 +548,83 @@ def _chat_prompt(transcript: list[tuple[str, str]], user_text: str) -> str:
         parts.append(f"{role}: {text}")
     parts.extend(["", f"user: {user_text}", "assistant:"])
     return "\n".join(parts)
+
+
+def _provider_options(
+    provider: ProviderName, reasoning_effort: str | None
+) -> dict[str, str] | None:
+    if reasoning_effort is None:
+        return None
+    valid = CLAUDE_REASONING_EFFORTS if provider == "claude" else CODEX_REASONING_EFFORTS
+    if reasoning_effort not in valid:
+        raise OauthPyError(
+            f"reasoning effort {reasoning_effort!r} is not valid for {provider}; "
+            f"expected one of {', '.join(valid)}"
+        )
+    return {"reasoning_effort": reasoning_effort}
+
+
+def _read_interactive_input(message: str) -> str:
+    if not sys.stdin.isatty():
+        return input(message)
+    try:
+        from prompt_toolkit import prompt
+        from prompt_toolkit.completion import Completer, Completion
+    except ImportError:
+        return input(message)
+
+    class SlashCompleter(Completer):
+        def get_completions(self, document: object, _complete_event: object):
+            text = getattr(document, "text_before_cursor", "")
+            for value, start_position in _completion_matches(text):
+                yield Completion(value, start_position=start_position)
+
+    return prompt(message, completer=SlashCompleter())
+
+
+def _completion_matches(text_before_cursor: str) -> list[tuple[str, int]]:
+    if not text_before_cursor.startswith("/"):
+        return []
+    tree = _completion_tree()
+    if " " not in text_before_cursor:
+        return [
+            (command, -len(text_before_cursor))
+            for command in tree
+            if command.startswith(text_before_cursor)
+        ]
+
+    command, _, rest = text_before_cursor.partition(" ")
+    values = tree.get(command)
+    if not isinstance(values, tuple):
+        return []
+    token = rest.rsplit(" ", 1)[-1]
+    return [(value, -len(token)) for value in values if value.startswith(token)]
+
+
+def _completion_tree() -> dict[str, tuple[str, ...] | None]:
+    model_values = (*CODEX_MODEL_EXAMPLES, *CLAUDE_MODEL_ALIASES, "clear")
+    return {
+        "/help": None,
+        "/exit": None,
+        "/quit": None,
+        "/status": None,
+        "/available": None,
+        "/models": None,
+        "/efforts": None,
+        "/login": _LOGIN_SOURCE_CHOICES,
+        "/provider": _PROVIDER_CHOICES,
+        "/source": _SOURCE_CHOICES,
+        "/cwd": ("clear",),
+        "/model": model_values,
+        "/effort": (*REASONING_EFFORTS, "clear"),
+        "/reasoning": (*REASONING_EFFORTS, "clear"),
+        "/timeout": ("clear",),
+        "/events": ("on", "off"),
+        "/clear": None,
+        "/run": None,
+        "/stream": None,
+        "/chat": None,
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover

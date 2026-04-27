@@ -17,6 +17,7 @@ from ..auth import (
     provider_state_dir,
     resolve_oauthpy_home,
 )
+from ..defaults import DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT
 from ..errors import CommandExecutionError, ProviderNotInstalledError, TimeoutExceededError
 from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
 from .base import Provider
@@ -167,12 +168,18 @@ def _build_options(
     """Construct ``ClaudeAgentOptions`` from oauthpy's run args."""
 
     kwargs: dict[str, Any] = {}
+    options = dict(provider_options or {})
     if cwd is not None:
         kwargs["cwd"] = os.fspath(cwd)
     if model is not None:
         kwargs["model"] = model
-    if provider_options:
-        kwargs.update(provider_options)
+    elif "model" not in options:
+        kwargs["model"] = DEFAULT_CLAUDE_MODEL
+    reasoning_effort = options.pop("reasoning_effort", DEFAULT_CLAUDE_REASONING_EFFORT)
+    if reasoning_effort is not None:
+        options.setdefault("effort", reasoning_effort)
+    if options:
+        kwargs.update(options)
     if env:
         merged_env = dict(kwargs.get("env") or {})
         merged_env.update(env)

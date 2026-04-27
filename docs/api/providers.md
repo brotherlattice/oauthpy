@@ -12,4 +12,8 @@
 .. automodule:: oauthpy.providers.claude
    :members:
    :show-inheritance:
+
+.. automodule:: oauthpy.providers.gemini
+   :members:
+   :show-inheritance:
 ```

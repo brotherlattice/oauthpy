@@ -11,7 +11,7 @@
 - Best-effort, read-only `Client.auth_status`.
 - `Client.login` that invokes the vendor's official login flow.
 - A tiny debugging CLI.
-- Isolated provider config directories via `auth_source="oauthpy"`.
+- Isolated provider config directories via `auth_source="oauthpy"` where the upstream tool documents a safe override.
 - External vendor session reuse via `auth_source="external"` or fallback from `auto`.
 
 ### Explicitly out of scope for v0.1
@@ -22,6 +22,7 @@
 - **Wire-compatibility with vendor cloud APIs.** `oauthpy` exposes its own small explicit Python API rather than pretending to be a clone of OpenAI's Responses API or Anthropic's Messages API.
 - **Copying or importing tokens by default.** `oauthpy` never copies existing vendor credentials into `~/.oauthpy/` automatically.
 - **Editing normal vendor credential files.** `oauthpy` does not directly edit `~/.codex/auth.json` or Claude credential files. It may create provider-owned config files under `~/.oauthpy/` so the official tools can operate there.
+- **Forcing isolated Gemini OAuth.** Gemini CLI does not currently document a safe config/auth-root override comparable to `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, so Gemini support reuses official external CLI state.
 - **HTTP proxy/server.** The library is the product. A future proxy could wrap it; v0.1 does not include one.
 - **Full conversational session management.** `oauthpy interactive` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
 
@@ -43,6 +44,12 @@ OpenAI documents Codex CLI authentication and credential storage. `oauthpy` runs
 
 Do not use `oauthpy` to proxy ChatGPT Plus/Pro capacity to other users — that is not what the OAuth grant covers.
 
+### Google (Gemini)
+
+Gemini support shells out to the official `gemini` CLI in headless JSON mode. Login uses the official interactive Gemini CLI flow or documented env auth such as `GEMINI_API_KEY`, Vertex AI variables, or ADC-related configuration.
+
+`oauthpy` does not implement Google OAuth, does not copy Gemini tokens, and does not parse Gemini OAuth credential files. Cached Google login status is only best-effort because Gemini CLI does not expose a separate documented `auth status` command; oauthpy may read non-secret `~/.gemini/settings.json` to identify a selected auth type.
+
 ### Security posture
 
 - `shell=False` everywhere. All subprocess calls pass argv lists.
@@ -51,7 +58,7 @@ Do not use `oauthpy` to proxy ChatGPT Plus/Pro capacity to other users — that 
 - `oauthpy` never persists OAuth tokens itself beyond what upstream tools already manage under the selected provider config directory.
 - No hidden global state: no module-level singletons, no env mutation outside the caller's explicit `env` argument.
 
-File-based credential storage is sensitive. Codex may store credentials in `auth.json`; Claude may store provider state under `CLAUDE_CONFIG_DIR`; and either provider may use OS keychain behavior depending on platform/config. oauthpy does not turn those files into a portable credential bundle.
+File-based credential storage is sensitive. Codex may store credentials in `auth.json`; Claude may store provider state under `CLAUDE_CONFIG_DIR`; Gemini may store state under `~/.gemini`; and upstream tools may use OS keychain behavior depending on platform/config. oauthpy does not turn those files into a portable credential bundle.
 
 The redactor is heuristic — it catches common secret shapes (`sk-*`, `sk-ant-*`, `ghp_*`, `Bearer …`, JWTs, long hex blobs). It is not a replacement for careful logging, and it is not a security boundary. Do not print arbitrary user data and trust the redactor to catch everything.
 

@@ -23,10 +23,12 @@ from .models import AuthSource, AuthStatus, Event, ProviderName, RunResult
 from .providers.base import Provider
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
+from .providers.gemini import GeminiProvider
 
 _PROVIDER_REGISTRY: dict[ProviderName, type[Provider]] = {
     "codex": CodexProvider,
     "claude": ClaudeProvider,
+    "gemini": GeminiProvider,
 }
 _PROVIDERS: tuple[ProviderName, ...] = get_args(ProviderName)
 

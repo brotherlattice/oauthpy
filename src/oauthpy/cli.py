@@ -30,6 +30,7 @@ from .defaults import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CLAUDE_REASONING_EFFORT,
     DEFAULT_CODEX_REASONING_EFFORT,
+    GEMINI_MODEL_EXAMPLES,
     REASONING_EFFORTS,
 )
 from .errors import OauthPyError
@@ -76,7 +77,7 @@ def _make_parser() -> argparse.ArgumentParser:
 
     login_p = auth_sub.add_parser("login", help="Run the provider's login flow")
     login_p.add_argument("--provider", required=True, choices=_PROVIDER_CHOICES)
-    login_p.add_argument("--source", default="oauthpy", choices=_LOGIN_SOURCE_CHOICES)
+    login_p.add_argument("--source", default=None, choices=_LOGIN_SOURCE_CHOICES)
 
     avail_p = sub.add_parser("available", help="Check if a provider is ready")
     avail_p.add_argument("--provider", required=True, choices=_PROVIDER_CHOICES)
@@ -174,7 +175,9 @@ def _cmd_auth_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_auth_login(args: argparse.Namespace) -> int:
-    client = Client(cast(ProviderName, args.provider), auth_source=cast(AuthSource, args.source))
+    provider = cast(ProviderName, args.provider)
+    source = args.source or _default_login_source(provider)
+    client = Client(provider, auth_source=cast(AuthSource, source))
     client.login()
     return 0
 
@@ -381,7 +384,7 @@ def _print_interactive_help() -> None:
                 "  /status",
                 "  /available",
                 "  /login [oauthpy|external]",
-                "  /provider codex|claude",
+                f"  /provider {'|'.join(_PROVIDER_CHOICES)}",
                 "  /source auto|oauthpy|external",
                 "  /cwd PATH | /cwd clear",
                 "  /model NAME | /model clear",
@@ -403,11 +406,19 @@ def _print_interactive_help() -> None:
 
 
 def _login_source_for_interactive(state: _InteractiveState, rest: str) -> AuthSource | None:
-    source = rest or ("oauthpy" if state.source == "auto" else state.source)
+    source = rest or (
+        state.source if state.source != "auto" else _default_login_source(state.provider)
+    )
     if source not in _LOGIN_SOURCE_CHOICES:
         print(f"usage: /login {'|'.join(_LOGIN_SOURCE_CHOICES)}", file=sys.stderr)
         return None
     return cast(AuthSource, source)
+
+
+def _default_login_source(provider: ProviderName) -> AuthSource:
+    # Gemini CLI does not document a safe config-root override, so its normal
+    # login path must reuse official external CLI state.
+    return "external" if provider == "gemini" else "oauthpy"
 
 
 def _model_status(state: _InteractiveState) -> str:
@@ -426,7 +437,10 @@ def _set_reasoning_effort(state: _InteractiveState, rest: str) -> None:
         state.reasoning_effort = None
         print(_reasoning_status(state), file=sys.stderr)
         return
-    valid = CLAUDE_REASONING_EFFORTS if state.provider == "claude" else CODEX_REASONING_EFFORTS
+    valid = _reasoning_efforts_for_provider(state.provider)
+    if not valid:
+        print("Gemini CLI does not expose a documented reasoning-effort flag.", file=sys.stderr)
+        return
     if rest not in valid:
         print(f"usage: /effort {'|'.join(valid)} | /effort clear", file=sys.stderr)
         return
@@ -439,6 +453,8 @@ def _reasoning_status(state: _InteractiveState) -> str:
         return f"reasoning_effort={state.reasoning_effort}"
     if state.provider == "claude":
         return f"reasoning_effort=<default {DEFAULT_CLAUDE_REASONING_EFFORT}>"
+    if state.provider == "gemini":
+        return "reasoning_effort=<not supported by gemini CLI>"
     return f"reasoning_effort=<default {DEFAULT_CODEX_REASONING_EFFORT}>"
 
 
@@ -448,6 +464,15 @@ def _print_model_help(provider: ProviderName, *, file: TextIO) -> None:
             "Claude model aliases: "
             + ", ".join(CLAUDE_MODEL_ALIASES)
             + f" (oauthpy default: {DEFAULT_CLAUDE_MODEL})",
+            file=file,
+        )
+        print("Use /model NAME, /model clear, or start with --model NAME.", file=file)
+        return
+    if provider == "gemini":
+        print(
+            "Gemini model examples: "
+            + ", ".join(GEMINI_MODEL_EXAMPLES)
+            + " (oauthpy otherwise lets Gemini CLI choose its provider default)",
             file=file,
         )
         print("Use /model NAME, /model clear, or start with --model NAME.", file=file)
@@ -467,6 +492,12 @@ def _print_effort_help(provider: ProviderName, *, file: TextIO) -> None:
             "Claude effort levels: "
             + ", ".join(CLAUDE_REASONING_EFFORTS)
             + f" (oauthpy default: {DEFAULT_CLAUDE_REASONING_EFFORT})",
+            file=file,
+        )
+        return
+    if provider == "gemini":
+        print(
+            "Gemini CLI does not expose a documented reasoning-effort flag through oauthpy.",
             file=file,
         )
         return
@@ -575,13 +606,25 @@ def _provider_options(
 ) -> dict[str, str] | None:
     if reasoning_effort is None:
         return None
-    valid = CLAUDE_REASONING_EFFORTS if provider == "claude" else CODEX_REASONING_EFFORTS
+    valid = _reasoning_efforts_for_provider(provider)
+    if not valid:
+        raise OauthPyError(
+            "Gemini CLI does not expose a documented reasoning-effort flag through oauthpy."
+        )
     if reasoning_effort not in valid:
         raise OauthPyError(
             f"reasoning effort {reasoning_effort!r} is not valid for {provider}; "
             f"expected one of {', '.join(valid)}"
         )
     return {"reasoning_effort": reasoning_effort}
+
+
+def _reasoning_efforts_for_provider(provider: ProviderName) -> tuple[str, ...]:
+    if provider == "claude":
+        return CLAUDE_REASONING_EFFORTS
+    if provider == "codex":
+        return CODEX_REASONING_EFFORTS
+    return ()
 
 
 def _read_interactive_input(message: str) -> str:
@@ -687,7 +730,7 @@ def _completion_matches(text_before_cursor: str) -> list[tuple[str, int]]:
 
 
 def _completion_tree() -> dict[str, tuple[str, ...] | None]:
-    model_values = (*CODEX_MODEL_EXAMPLES, *CLAUDE_MODEL_ALIASES, "clear")
+    model_values = (*CODEX_MODEL_EXAMPLES, *CLAUDE_MODEL_ALIASES, *GEMINI_MODEL_EXAMPLES, "clear")
     return {
         "/help": None,
         "/exit": None,

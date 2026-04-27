@@ -1,6 +1,6 @@
 # Providers
 
-Both providers expose the same public methods via `Client`:
+Providers expose the same public methods via `Client`:
 
 | Method | Returns |
 |--------|---------|
@@ -21,6 +21,7 @@ from oauthpy import Client
 Client("codex")                         # auth_source="auto"
 Client("codex", auth_source="oauthpy")   # CODEX_HOME under ~/.oauthpy
 Client("claude", auth_source="external") # normal Claude Code session
+Client("gemini")                         # normal Gemini CLI session
 ```
 
 `auth_source="auto"` checks isolated oauthpy state first and then falls back to external vendor state. `oauthpy_home` or `OAUTHPY_HOME` can override the default `~/.oauthpy`.
@@ -117,6 +118,44 @@ print(result.text)
 | *unknown* | `MESSAGE` |
 
 The raw SDK object is always on `Event.raw`, so callers who want strict typing can narrow it themselves.
+
+## Gemini
+
+**Transport**: `gemini-cli-jsonl` — shells out to `gemini --prompt ... --output-format stream-json` and parses newline-delimited JSON events. Single-object `--output-format json` is also supported through `provider_options={"output_format": "json"}`.
+
+**Binary lookup**: defaults to `gemini` on PATH. Override with the `OAUTHPY_GEMINI_BINARY` environment variable.
+
+**Auth isolation**: Gemini currently uses external CLI state only. The official CLI documents `~/.gemini`, project `.gemini`, and env auth, but no safe config/auth-root override equivalent to `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. `auth_source="oauthpy"` is therefore reported as unsupported.
+
+**Supported `provider_options` keys**:
+
+| Key | Maps to `gemini` flag |
+|-----|------------------------|
+| `output_format` | `--output-format stream-json` or `json` |
+| `all_files` | `--all-files` |
+| `include_directories` | `--include-directories DIRS` |
+| `sandbox` | `--sandbox` / `--sandbox=VALUE` |
+| `approval_mode` | `--approval-mode VALUE` |
+| `yolo` | `--yolo` |
+| `extra_argv` | appended to argv |
+
+`cwd` is passed as the subprocess working directory. `model` maps to `--model`.
+
+**Example**:
+
+```python
+from oauthpy import Client
+
+result = Client("gemini").run(
+    "Summarize this repository in one paragraph",
+    cwd=".",
+    model="gemini-2.5-flash",
+    timeout=120,
+)
+print(result.text)
+```
+
+**Event sources**: Gemini JSONL `message` rows map to `MESSAGE`, `tool_use` / `tool_result` rows map to `TOOL`, `error` maps to `ERROR`, and `result` maps to `DONE` with best-effort usage extraction from `stats`.
 
 ## Running streams manually
 

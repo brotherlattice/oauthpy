@@ -13,13 +13,13 @@ from typing import Any, Literal
 
 from ._redact import redact
 
-ProviderName = Literal["codex", "claude"]
+ProviderName = Literal["codex", "claude", "gemini"]
 """The set of providers oauthpy v0.1 supports."""
 
 AuthSource = Literal["auto", "oauthpy", "external"]
 """Where oauthpy should look for provider auth/config."""
 
-TransportName = Literal["codex-cli-jsonl", "claude-agent-sdk"]
+TransportName = Literal["codex-cli-jsonl", "claude-agent-sdk", "gemini-cli-jsonl"]
 """How a provider is being driven under the hood."""
 
 JsonScalar = str | int | float | bool | None

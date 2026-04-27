@@ -1,4 +1,4 @@
-"""oauthpy — local, user-operated Python API over Codex and Claude Code.
+"""oauthpy — local, user-operated Python API over coding agents.
 
 Public surface:
 

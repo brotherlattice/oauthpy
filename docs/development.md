@@ -17,17 +17,19 @@ Offline (default):
 
 ```bash
 pytest
-# equivalent to: pytest -m "not live_codex and not live_claude"
+# equivalent to: pytest -m "not live_codex and not live_claude and not live_gemini"
 ```
 
 Offline tests are intentionally hermetic. They must not depend on a real
-`codex` binary, a real Claude Code install, network access, existing OAuth
-sessions, or writable provider home directories. Provider tests fake the
+`codex` binary, a real Claude Code install, a real Gemini CLI install, network
+access, existing OAuth sessions, or writable provider home directories. Provider tests fake the
 official local integration boundary instead:
 
 - Codex tests fake `codex login status` and `codex exec --json` JSONL output.
 - Claude tests fake `claude auth status --json` and the `claude-agent-sdk`
   message stream.
+- Gemini tests fake `gemini --prompt ... --output-format stream-json` JSONL
+  output and auth/env detection.
 - Missing-provider tests assert the public behavior: `auth_status()` reports
   unauthenticated diagnostics, `available()` is false, and run/login paths raise
   `ProviderNotInstalledError` when the required local tool is absent.
@@ -40,6 +42,7 @@ Live tests require real provider setups and are opt-in:
 ```bash
 OAUTHPY_LIVE_CODEX=1 pytest -m live_codex
 OAUTHPY_LIVE_CLAUDE=1 pytest -m live_claude
+OAUTHPY_LIVE_GEMINI=1 pytest -m live_gemini
 ```
 
 ## Lint and format
@@ -88,6 +91,7 @@ src/oauthpy/
     base.py         # Provider ABC
     codex.py        # codex exec --json JSONL adapter
     claude.py       # claude-agent-sdk adapter
+    gemini.py       # gemini --prompt stream-json adapter
 
 tests/              # offline unit tests + live/ opt-in smoke tests
 docs/               # Sphinx + MyST

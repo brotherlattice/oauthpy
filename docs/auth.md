@@ -21,6 +21,8 @@
     auth.json          # only if Codex uses file credential storage
   claude/
     ...                # owned by Claude Code / claude-agent-sdk
+  gemini/
+    ...                # reserved; isolated Gemini auth is not supported yet
 ```
 
 Do not commit, copy casually, paste, or share any file-based credential material under this tree. Treat provider credential files like passwords.
@@ -31,9 +33,11 @@ Do not commit, copy casually, paste, or share any file-based credential material
 oauthpy auth login --provider codex          # isolated oauthpy source
 oauthpy auth login --provider claude         # isolated oauthpy source
 oauthpy auth login --provider claude --source external
+oauthpy auth login --provider gemini         # external Gemini CLI source
 
 oauthpy auth status --provider codex --source auto
 oauthpy auth status --provider claude --source oauthpy
+oauthpy auth status --provider gemini --source auto
 oauthpy available --provider codex
 ```
 
@@ -91,6 +95,30 @@ For `auth_source="auto"`, oauthpy checks isolated Claude status first if isolate
 - `CLAUDE_CODE_OAUTH_TOKEN`
 
 `claude setup-token` is not normal interactive login. It is a separate CI/headless helper that prints a long-lived token; oauthpy does not call it for `Client("claude").login()`.
+
+## Gemini
+
+`oauthpy` uses the official Gemini CLI for login and runs:
+
+- Login: `gemini` interactive auth/UI
+- Runs: `gemini --prompt ... --output-format stream-json`
+
+Gemini CLI currently documents user config under `~/.gemini`, project config under `.gemini`, and environment authentication such as:
+
+- `GEMINI_API_KEY`
+- `GOOGLE_API_KEY`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `GOOGLE_GENAI_USE_VERTEXAI`
+- `GOOGLE_CLOUD_PROJECT`
+- `GOOGLE_CLOUD_LOCATION`
+
+It does not document a `CODEX_HOME` or `CLAUDE_CONFIG_DIR` equivalent for isolating all auth/config state under `~/.oauthpy`. Therefore:
+
+- `auth_source="auto"` and `auth_source="external"` both use normal Gemini CLI state.
+- `auth_source="oauthpy"` reports `isolated_auth_unsupported`.
+- `oauthpy auth login --provider gemini` defaults to external mode.
+
+`AuthStatus` can verify env-based Gemini auth without exposing values. For cached Google login, Gemini has no separate documented status command, so oauthpy only reports a best-effort `login-state` when non-secret `~/.gemini/settings.json` declares a selected auth type. It does not read or parse Gemini OAuth credential files such as token caches.
 
 ## OpenClaw Precedent
 

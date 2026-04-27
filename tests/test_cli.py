@@ -20,6 +20,7 @@ from oauthpy.cli import (
 )
 from oauthpy.providers import claude as claude_mod
 from oauthpy.providers import codex as codex_mod
+from oauthpy.providers import gemini as gemini_mod
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,7 @@ def no_real_provider_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(codex_mod._subprocess, "which", fail_unmocked_which)
     monkeypatch.setattr(claude_mod._subprocess, "which", fail_unmocked_which)
+    monkeypatch.setattr(gemini_mod._subprocess, "which", fail_unmocked_which)
 
 
 def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
@@ -48,8 +50,10 @@ def test_interactive_slash_completion_candidates() -> None:
     assert _completion_matches("hello") == []
     assert ("codex", -1) in _completion_matches("/provider c")
     assert ("claude", 0) in _completion_matches("/provider ")
+    assert ("gemini", -1) in _completion_matches("/provider g")
     assert ("high", -1) in _completion_matches("/effort h")
     assert ("sonnet", -1) in _completion_matches("/model s")
+    assert ("gemini-2.5-flash", -1) in _completion_matches("/model g")
 
 
 def test_interactive_enter_accepts_unique_command_prefix() -> None:
@@ -148,6 +152,36 @@ def test_claude_auth_status_json_when_sdk_and_cli_missing(
     assert '"provider": "claude"' in out
     assert '"installed": false' in out
     assert '"reason": "cli_missing"' in out
+
+
+def test_gemini_auth_status_json_when_cli_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _b: None)
+    rc = main(["auth", "status", "--provider", "gemini", "--json"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert '"provider": "gemini"' in out
+    assert '"installed": false' in out
+    assert '"reason": "binary_missing"' in out
+
+
+def test_gemini_login_defaults_to_external(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _b: "/usr/bin/gemini")
+    captured: dict[str, object] = {}
+
+    async def fake_run_interactive(argv: list[str], **kwargs: object) -> CompletedProcess:
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return CompletedProcess(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gemini_mod._subprocess, "run_interactive", fake_run_interactive)
+    rc = main(["auth", "login", "--provider", "gemini"])
+    assert rc == 0
+    assert captured["argv"] == ["/usr/bin/gemini"]
+    assert captured["kwargs"] == {"env": None, "timeout": None}
 
 
 def test_run_emits_text(

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oauthpy"
 dynamic = ["version"]
-description = "Local Python access to OAuth-authenticated Codex and Claude Code agents"
+description = "Local Python access to OAuth-authenticated coding agents"
 readme = "README.md"
 authors = [
     { name = "Philipp Flotho" }
@@ -33,6 +33,10 @@ dependencies = [
 oauthpy = "oauthpy.cli:main"
 
 [project.optional-dependencies]
+# Gemini support shells out to the installed `gemini` CLI and currently has no
+# additional Python dependency. Keep the extra so users can opt into the surface
+# explicitly with `pip install oauthpy[gemini]`.
+gemini = []
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -82,6 +86,7 @@ asyncio_mode = "auto"
 markers = [
     "live_codex: requires a local `codex` CLI that is logged in (skipped by default)",
     "live_claude: requires a local Claude auth (claude-agent-sdk / claude CLI) (skipped by default)",
+    "live_gemini: requires a local `gemini` CLI that is authenticated (skipped by default)",
 ]
 
 [tool.coverage.run]

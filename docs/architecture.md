@@ -1,11 +1,12 @@
 # Architecture
 
-## Why Codex uses CLI JSONL and Claude uses the Agent SDK
+## Why providers use different local transports
 
-Both Codex and Claude Code expose a "run a prompt locally, using my OAuth login" capability, but through very different integration surfaces:
+Codex, Claude Code, and Gemini expose a "run a prompt locally, using my login" capability, but through different integration surfaces:
 
 - **Codex** does not ship a stable Python SDK in v0.1. It does ship a mature `codex exec --json` mode in the official CLI that emits a newline-delimited JSON event stream covering thread/turn lifecycle events, item events, messages, reasoning, plan updates, tool calls, command executions, file changes, errors, and `turn.completed`. That stream is our supported local programmatic surface, so `oauthpy.providers.codex` parses it.
 - **Claude Code** ships `claude-agent-sdk` on PyPI with a streaming `query(prompt, options=ClaudeAgentOptions(...))` entrypoint. Messages are typed (`SystemMessage`, `AssistantMessage`, `ResultMessage`, ...). There's no reason to shell out to the `claude` CLI from Python when the SDK is right there, so `oauthpy.providers.claude` uses it directly.
+- **Gemini** ships an official `gemini` CLI with headless JSON output. `oauthpy.providers.gemini` drives `gemini --prompt ... --output-format stream-json` and parses the JSONL event stream. It intentionally does not scrape the interactive TUI.
 
 The consequence is that the two adapters look internally very different but converge on the same `Event` / `RunResult` / `AuthStatus` shapes, which is the entire point of this package.
 
@@ -23,11 +24,11 @@ This mirrors the shape most Python developers expect from a modern SDK. In async
 
 Auth state is resolved before provider calls:
 
-| Source | Codex effect | Claude effect |
-|--------|--------------|---------------|
-| `auto` | Prefer authenticated `~/.oauthpy/codex`, then normal Codex CLI state. | Prefer authenticated `~/.oauthpy/claude`, then normal Claude CLI/session/env state. |
-| `oauthpy` | Set `CODEX_HOME=$OAUTHPY_HOME/codex`. | Set `CLAUDE_CONFIG_DIR=$OAUTHPY_HOME/claude`. |
-| `external` | Do not set `CODEX_HOME`. | Do not set `CLAUDE_CONFIG_DIR`. |
+| Source | Codex effect | Claude effect | Gemini effect |
+|--------|--------------|---------------|---------------|
+| `auto` | Prefer authenticated `~/.oauthpy/codex`, then normal Codex CLI state. | Prefer authenticated `~/.oauthpy/claude`, then normal Claude CLI/session/env state. | Use normal Gemini CLI/env state. |
+| `oauthpy` | Set `CODEX_HOME=$OAUTHPY_HOME/codex`. | Set `CLAUDE_CONFIG_DIR=$OAUTHPY_HOME/claude`. | Unsupported until Gemini documents an isolated auth/config root. |
+| `external` | Do not set `CODEX_HOME`. | Do not set `CLAUDE_CONFIG_DIR`. | Use normal Gemini CLI/env state. |
 
 `OAUTHPY_HOME` defaults to `~/.oauthpy`. Directory creation is private (`0700`) where the platform supports it. oauthpy never copies external vendor credentials into this tree by default.
 
@@ -71,6 +72,7 @@ A future direct backend would implement the same Protocol and be passed in via `
 ## What we deliberately do not do in v0.1
 
 - Do not edit `~/.codex/auth.json` or any Claude credential file.
+- Do not edit or parse Gemini OAuth credential files.
 - Do not copy existing vendor tokens into `~/.oauthpy/` automatically.
 - Do not reverse-engineer vendor web endpoints.
 - Do not scrape TUI output.

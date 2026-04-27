@@ -29,6 +29,10 @@ CLAUDE_MODEL_ALIASES = (
     "opus[1m]",
     "opusplan",
 )
+GEMINI_MODEL_EXAMPLES = (
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+)
 
 
 __all__ = [
@@ -39,5 +43,6 @@ __all__ = [
     "DEFAULT_CLAUDE_MODEL",
     "DEFAULT_CLAUDE_REASONING_EFFORT",
     "DEFAULT_CODEX_REASONING_EFFORT",
+    "GEMINI_MODEL_EXAMPLES",
     "REASONING_EFFORTS",
 ]

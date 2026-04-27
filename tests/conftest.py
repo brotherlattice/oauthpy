@@ -28,6 +28,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "GOOGLE_API_KEY",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_GENAI_USE_GCA",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
         "OAUTHPY_CODEX_BINARY",

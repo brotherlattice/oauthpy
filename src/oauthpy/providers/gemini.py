@@ -26,6 +26,7 @@ _GEMINI_ENV_KEYS = (
     "GOOGLE_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_GENAI_USE_GCA",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
 )
@@ -333,6 +334,12 @@ class GeminiProvider(Provider):
         elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
             mode = "cloud"
             env_name = "GOOGLE_APPLICATION_CREDENTIALS"
+        elif os.environ.get("GOOGLE_GENAI_USE_VERTEXAI"):
+            mode = "cloud"
+            env_name = "GOOGLE_GENAI_USE_VERTEXAI"
+        elif os.environ.get("GOOGLE_GENAI_USE_GCA"):
+            mode = "cloud"
+            env_name = "GOOGLE_GENAI_USE_GCA"
 
         return AuthStatus(
             provider="gemini",

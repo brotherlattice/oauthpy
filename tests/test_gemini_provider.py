@@ -48,6 +48,16 @@ async def test_auth_status_env_api_key_mode(
     assert "secret-key" not in str(status.details)
 
 
+async def test_auth_status_gca_env_mode(monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _binary: "/usr/bin/gemini")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_GCA", "true")
+    provider = gemini_mod.GeminiProvider(auth_source="external")
+    status = await provider.auth_status()
+    assert status.authenticated is True
+    assert status.mode == "cloud"
+    assert status.details["env_auth"] == "GOOGLE_GENAI_USE_GCA"
+
+
 async def test_auth_status_oauthpy_source_is_unsupported(
     monkeypatch: pytest.MonkeyPatch, clean_env: None, tmp_path: Path
 ) -> None:

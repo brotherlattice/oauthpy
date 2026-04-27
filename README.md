@@ -130,7 +130,7 @@ result = client.run("Summarize this repo", cwd=".")
 print(result.text)
 ```
 
-Use `oauthpy auth login --provider gemini` or run `gemini` directly to configure the official CLI login. Environment auth such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `GOOGLE_APPLICATION_CREDENTIALS` is detected without printing values.
+Use `oauthpy auth login --provider gemini` or run `gemini` directly to configure the official CLI login. Environment auth such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_GENAI_USE_VERTEXAI`, or `GOOGLE_GENAI_USE_GCA` is detected without printing values.
 
 ## Model and reasoning defaults
 

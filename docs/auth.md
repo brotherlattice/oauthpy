@@ -109,6 +109,7 @@ Gemini CLI currently documents user config under `~/.gemini`, project config und
 - `GOOGLE_API_KEY`
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `GOOGLE_GENAI_USE_VERTEXAI`
+- `GOOGLE_GENAI_USE_GCA`
 - `GOOGLE_CLOUD_PROJECT`
 - `GOOGLE_CLOUD_LOCATION`
 

@@ -26,6 +26,26 @@ Client("gemini")                         # normal Gemini CLI session
 
 `auth_source="auto"` checks isolated oauthpy state first and then falls back to external vendor state. `oauthpy_home` or `OAUTHPY_HOME` can override the default `~/.oauthpy`.
 
+## Common retry options
+
+Retries are **off by default** for every provider. Set `provider_options["max_retries"]` to opt in for batch workloads that can tolerate repeated provider calls.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `max_retries` | `0` | Number of retries after the first failed attempt. |
+| `retry_backoff_s` | `1.0` | Initial exponential backoff delay. |
+| `retry_backoff_max_s` | `8.0` | Maximum delay after jitter. |
+| `retry_jitter_s` | `0.25` | Added random jitter range. |
+| `retry_on_timeout` | `False` | Retry `TimeoutExceededError` only when explicitly enabled. |
+
+The shared retry wrapper only retries failures before usable output is emitted. Provider adapters classify their own transient failures:
+
+- Claude retries known `claude-agent-sdk` reader/transport failures such as `Fatal error in message reader` and opaque `Command failed with exit code 1` reader failures.
+- Codex and Gemini retry configured timeouts and temporary CLI/network failures.
+- No provider retries auth failures, invalid model/config errors, permission/sandbox denials, deterministic output/schema failures, or post-output stream failures.
+
+If all attempts fail, oauthpy raises one redacted `CommandExecutionError` with all failed-attempt diagnostics. If a later attempt succeeds, retry metadata is available on `RunResult.raw["retry"]`.
+
 ## Codex
 
 **Transport**: `codex-cli-jsonl` — shells out to `codex exec --json` and parses the JSONL stream.

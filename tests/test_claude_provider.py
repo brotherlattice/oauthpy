@@ -481,3 +481,169 @@ async def test_existing_command_execution_error_is_not_wrapped(
     assert str(excinfo.value) == "already structured"
     assert excinfo.value.returncode == 7
     assert excinfo.value.stderr == "raw stderr"
+
+
+async def test_reader_failure_retries_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+        yield fake_claude_sdk.AssistantMessage(content=[fake_claude_sdk.TextBlock(text="retry ok")])
+        yield fake_claude_sdk.ResultMessage(result='{"relationship": 1, "unrelated": 0}')
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    result = await provider.run(
+        "classify",
+        provider_options={"max_retries": 2, "retry_backoff_s": 0, "retry_jitter_s": 0},
+    )
+
+    assert calls == 2
+    assert result.text == '{"relationship": 1, "unrelated": 0}'
+    assert isinstance(result.raw, dict)
+    assert result.raw["retry"]["retry_count"] == 1
+    assert result.raw["retry"]["failed_attempts"][0]["retryable"] is True
+
+
+async def test_reader_failure_default_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError):
+        await provider.run("boom")
+    assert calls == 1
+
+
+async def test_reader_failure_exhaustion_includes_all_attempts(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        options.stderr(f"stderr attempt {calls}")
+        raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run(
+            "boom",
+            provider_options={"max_retries": 1, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        )
+
+    assert calls == 2
+    message = str(excinfo.value)
+    assert "failed after 2 attempts" in message
+    assert "attempt 1" in message
+    assert "attempt 2" in message
+    assert excinfo.value.details["attempts"][0]["details"]["stderr_tail"] == "stderr attempt 1"
+    assert excinfo.value.details["attempts"][1]["details"]["stderr_tail"] == "stderr attempt 2"
+
+
+async def test_reader_retry_does_not_retry_auth_like_errors(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("not logged in: run claude auth login")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError):
+        await provider.run(
+            "boom",
+            provider_options={"max_retries": 2, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        )
+    assert calls == 1
+
+
+async def test_stream_reader_failure_retries_before_events(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+        yield fake_claude_sdk.ResultMessage(result="ok")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    events = [
+        event
+        async for event in provider.stream(
+            "boom",
+            provider_options={"max_retries": 1, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        )
+    ]
+    assert calls == 2
+    assert events[-1].kind is EventKind.DONE
+
+
+async def test_stream_reader_failure_after_event_is_not_replayed(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    calls = 0
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        nonlocal calls
+        calls += 1
+        yield fake_claude_sdk.AssistantMessage(content=[fake_claude_sdk.TextBlock(text="partial")])
+        raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError):
+        async for _ in provider.stream(
+            "boom",
+            provider_options={"max_retries": 2, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        ):
+            pass
+    assert calls == 1

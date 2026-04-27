@@ -32,6 +32,14 @@ Auth state is resolved before provider calls:
 
 `OAUTHPY_HOME` defaults to `~/.oauthpy`. Directory creation is private (`0700`) where the platform supports it. oauthpy never copies external vendor credentials into this tree by default.
 
+## Retry layer
+
+`Provider.run` and `Provider.stream` share a small retry wrapper. It parses common retry options from `provider_options`, removes them before provider-specific option handling, and then calls each provider's single-attempt stream implementation.
+
+Retries are disabled by default (`max_retries=0`) to preserve one-shot semantics. When enabled, the wrapper only retries failures before public events have been yielded. Each provider owns its retry classifier because Claude SDK reader failures, Codex CLI subprocess failures, and Gemini CLI failures expose different diagnostics.
+
+Successful retried runs store metadata in `RunResult.raw["retry"]`. Exhausted retries raise a single redacted `CommandExecutionError` containing all failed attempts.
+
 ## Event taxonomy
 
 Every event is normalized to one of eight `EventKind` values:

@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from oauthpy import AuthRequiredError, EventKind, ProtocolError, ProviderNotInstalledError
+from oauthpy import (
+    AuthRequiredError,
+    CommandExecutionError,
+    EventKind,
+    ProtocolError,
+    ProviderNotInstalledError,
+)
 from oauthpy._subprocess import CompletedProcess
 from oauthpy.defaults import DEFAULT_GEMINI_MODEL
 from oauthpy.providers import gemini as gemini_mod
@@ -211,3 +217,59 @@ async def test_reasoning_effort_is_rejected(
     provider = gemini_mod.GeminiProvider(auth_source="external")
     with pytest.raises(ProtocolError):
         await provider.run("hello", provider_options={"reasoning_effort": "low"})
+
+
+async def test_gemini_transient_cli_failure_retries(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _binary: "/usr/bin/gemini")
+    calls = 0
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise CommandExecutionError(
+                "gemini exited",
+                returncode=1,
+                stderr="temporary network error: connection reset",
+            )
+        yield '{"type": "result", "response": "retry ok"}'
+
+    monkeypatch.setattr(gemini_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = gemini_mod.GeminiProvider(auth_source="external")
+    result = await provider.run(
+        "p",
+        provider_options={"max_retries": 1, "retry_backoff_s": 0, "retry_jitter_s": 0},
+    )
+
+    assert calls == 2
+    assert result.text == "retry ok"
+    assert isinstance(result.raw, dict)
+    assert result.raw["retry"]["retry_count"] == 1
+
+
+async def test_gemini_auth_config_failure_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    monkeypatch.setattr(gemini_mod._subprocess, "which", lambda _binary: "/usr/bin/gemini")
+    calls = 0
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        nonlocal calls
+        calls += 1
+        raise CommandExecutionError(
+            "gemini exited",
+            returncode=41,
+            stderr="Please set an Auth method in settings.json before running",
+        )
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(gemini_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = gemini_mod.GeminiProvider(auth_source="external")
+    with pytest.raises(ProtocolError):
+        await provider.run(
+            "p",
+            provider_options={"max_retries": 2, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        )
+    assert calls == 1

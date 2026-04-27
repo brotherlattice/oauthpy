@@ -25,6 +25,7 @@
 - **Forcing isolated Gemini OAuth.** Gemini CLI does not currently document a safe config/auth-root override comparable to `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, so Gemini support reuses official external CLI state.
 - **HTTP proxy/server.** The library is the product. A future proxy could wrap it; v0.1 does not include one.
 - **Full conversational session management.** `oauthpy interactive` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
+- **Automatic retries by default.** Retries are available for transient provider/transport failures, but they are disabled unless `provider_options["max_retries"]` is set. This avoids hidden extra cost and repeated tool side effects.
 
 ## Compliance notes
 
@@ -61,6 +62,8 @@ Gemini support shells out to the official `gemini` CLI in headless JSON mode. Lo
 File-based credential storage is sensitive. Codex may store credentials in `auth.json`; Claude may store provider state under `CLAUDE_CONFIG_DIR`; Gemini may store state under `~/.gemini`; and upstream tools may use OS keychain behavior depending on platform/config. oauthpy does not turn those files into a portable credential bundle.
 
 The redactor is heuristic — it catches common secret shapes (`sk-*`, `sk-ant-*`, `ghp_*`, `Bearer …`, JWTs, long hex blobs). It is not a replacement for careful logging, and it is not a security boundary. Do not print arbitrary user data and trust the redactor to catch everything.
+
+Retries can repeat provider work. Enable them mainly for read-only one-shot batch workloads where a transient CLI/SDK failure is more likely than a deterministic prompt failure. Avoid broad retries around tool-mutating prompts unless the surrounding workflow is idempotent.
 
 ### Reporting issues
 

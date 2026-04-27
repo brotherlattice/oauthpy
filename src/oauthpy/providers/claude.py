@@ -25,7 +25,7 @@ from ..auth import (
 from ..defaults import DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT
 from ..errors import CommandExecutionError, ProviderNotInstalledError, TimeoutExceededError
 from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
-from .base import Provider
+from .base import Provider, RetryDecision, RetryPolicy
 
 _CLAUDE_AUTH_ENV_KEYS = (
     "CLAUDE_CODE_USE_BEDROCK",
@@ -46,6 +46,23 @@ _DIAGNOSTIC_TAIL_LINES = 80
 _EXIT_CODE_RE = re.compile(
     r"(?:exit(?:ed)?(?:\s+with)?\s+code|exit\s*code)[:\s]+(-?\d+)",
     re.IGNORECASE,
+)
+_CLAUDE_READER_FAILURE_MARKERS = (
+    "fatal error in message reader",
+    "message reader",
+    "command failed with exit code 1",
+    "check stderr output for details",
+)
+_CLAUDE_NON_RETRYABLE_MARKERS = (
+    "not logged in",
+    "authentication",
+    "unauthorized",
+    "permission denied",
+    "permission_mode",
+    "invalid model",
+    "unknown model",
+    "claudeagentoptions rejected",
+    "unsupported",
 )
 
 
@@ -570,7 +587,7 @@ class ClaudeProvider(Provider):
         self._ensure_oauthpy_state()
         return "oauthpy"
 
-    async def stream(
+    async def _stream_once(
         self,
         prompt: str,
         *,
@@ -589,6 +606,7 @@ class ClaudeProvider(Provider):
         source = await self._resolve_run_source()
         query, options_cls = sdk
         diagnostics = _ClaudeDiagnostics()
+        resolved_model = model or DEFAULT_CLAUDE_MODEL
         options = _build_options(
             options_cls,
             cwd=cwd,
@@ -617,12 +635,15 @@ class ClaudeProvider(Provider):
                 raise TimeoutExceededError(f"claude stream timed out after {timeout}s") from exc
 
         emitted_done = False
+        events_received = 0
+        phase = "startup"
         with diagnostics.capture_sdk_logger():
             try:
                 stream_obj = query(prompt=prompt, options=options)
                 if inspect.iscoroutine(stream_obj):
                     stream_obj = await stream_obj
                 iterator = stream_obj.__aiter__()
+                phase = "stream"
 
                 while True:
                     try:
@@ -631,17 +652,27 @@ class ClaudeProvider(Provider):
                         break
                     error_text = _sdk_error_payload_text(msg)
                     if error_text:
+                        phase = "error_payload"
                         raise RuntimeError(error_text)
                     for event in _events_from_sdk_message(msg):
                         if event.kind is EventKind.DONE:
                             emitted_done = True
+                        events_received += 1
                         yield event
             except (CommandExecutionError, TimeoutExceededError):
                 raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                raise _claude_runtime_error(exc, diagnostics) from exc
+                raise _claude_runtime_error(
+                    exc,
+                    diagnostics,
+                    source=source,
+                    binary=_safe_which(self._binary),
+                    model=resolved_model,
+                    phase=phase,
+                    events_received=events_received,
+                ) from exc
             finally:
                 if stream_obj is not None:
                     aclose = getattr(stream_obj, "aclose", None)
@@ -653,6 +684,42 @@ class ClaudeProvider(Provider):
 
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
+
+    def _retry_decision(
+        self,
+        exc: Exception,
+        *,
+        policy: RetryPolicy,
+        events_yielded: int,
+    ) -> RetryDecision:
+        if events_yielded:
+            return RetryDecision(False, "events_already_yielded")
+        if isinstance(exc, TimeoutExceededError):
+            return RetryDecision(policy.retry_on_timeout, "timeout")
+        if not isinstance(exc, CommandExecutionError):
+            return RetryDecision(False, "not_retryable")
+        text = _diagnostic_text(exc)
+        if _has_marker(text, _CLAUDE_NON_RETRYABLE_MARKERS):
+            return RetryDecision(False, "non_retryable_claude_error")
+        if _has_marker(text, _CLAUDE_READER_FAILURE_MARKERS):
+            return RetryDecision(True, "transient_claude_reader_failure")
+        return RetryDecision(False, "claude_command_error")
+
+    def _retry_context(
+        self,
+        *,
+        cwd: str | os.PathLike[str] | None,
+        model: str | None,
+        provider_options: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": self.name,
+            "transport": self.transport,
+            "binary": _safe_which(self._binary),
+            "requested_source": self._auth_source,
+            "model": model or DEFAULT_CLAUDE_MODEL,
+            "cwd": os.fspath(cwd) if cwd is not None else None,
+        }
 
     def _ensure_oauthpy_state(self) -> None:
         ensure_private_dir(self._oauthpy_home)
@@ -704,6 +771,13 @@ def _claude_mode_from_payload(payload: Mapping[str, Any]) -> str:
     return "unknown"
 
 
+def _safe_which(binary: str) -> str:
+    try:
+        return _subprocess.which(binary) or binary
+    except Exception:
+        return binary
+
+
 def _safe_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -743,7 +817,16 @@ def _error_text(value: Any) -> str | None:
     return str(value) if value else None
 
 
-def _claude_runtime_error(exc: Exception, diagnostics: _ClaudeDiagnostics) -> CommandExecutionError:
+def _claude_runtime_error(
+    exc: Exception,
+    diagnostics: _ClaudeDiagnostics,
+    *,
+    source: AuthSource,
+    binary: str,
+    model: str,
+    phase: str,
+    events_received: int,
+) -> CommandExecutionError:
     message = f"claude-agent-sdk run failed: {exc or type(exc).__name__}"
     sdk_logs = diagnostics.sdk_log_tail()
     if sdk_logs:
@@ -751,10 +834,23 @@ def _claude_runtime_error(exc: Exception, diagnostics: _ClaudeDiagnostics) -> Co
     stderr = diagnostics.stderr_tail()
     if stderr:
         message += f"\nclaude stderr:\n{stderr}"
+    returncode = _returncode_from_exception(exc)
     return CommandExecutionError(
         redact(message),
-        returncode=_returncode_from_exception(exc),
+        returncode=returncode,
         stderr=stderr or None,
+        details={
+            "provider": "claude",
+            "transport": "claude-agent-sdk",
+            "source": source,
+            "binary": binary,
+            "model": model,
+            "phase": phase,
+            "events_received": events_received,
+            "returncode": returncode,
+            "sdk_log_tail": sdk_logs or None,
+            "stderr_tail": stderr or None,
+        },
     )
 
 
@@ -770,6 +866,21 @@ def _returncode_from_exception(exc: Exception) -> int | None:
         return int(match.group(1))
     except ValueError:  # pragma: no cover - guarded by regex
         return None
+
+
+def _diagnostic_text(exc: CommandExecutionError) -> str:
+    details = getattr(exc, "details", {})
+    parts = [str(exc), exc.stderr or ""]
+    if isinstance(details, Mapping):
+        for key in ("sdk_log_tail", "stderr_tail", "phase"):
+            value = details.get(key)
+            if value is not None:
+                parts.append(str(value))
+    return "\n".join(parts).lower()
+
+
+def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
 
 
 def _usage_from_mapping(raw: Mapping[str, Any], cost: Any = None) -> Usage:

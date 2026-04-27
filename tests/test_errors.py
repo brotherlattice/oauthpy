@@ -44,6 +44,16 @@ def test_command_execution_error_carries_returncode_and_stderr() -> None:
     assert "sk-abcdefghijklmnop" not in (exc.stderr or "")
 
 
+def test_command_execution_error_redacts_details() -> None:
+    exc = CommandExecutionError(
+        "provider failed",
+        details={"attempts": [{"stderr": "Bearer abc.def.ghi sk-ant-abcdefghijklmnop123"}]},
+    )
+    assert "sk-ant-abcdefghijklmnop" not in str(exc.details)
+    assert "Bearer abc.def.ghi" not in str(exc.details)
+    assert "REDACTED" in str(exc.details)
+
+
 def test_error_raises_cleanly() -> None:
     with pytest.raises(OauthPyError) as excinfo:
         raise AuthRequiredError("please log in")

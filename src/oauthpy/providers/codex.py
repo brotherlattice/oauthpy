@@ -25,12 +25,35 @@ from ..errors import (
     TimeoutExceededError,
 )
 from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
-from .base import Provider
+from .base import Provider, RetryDecision, RetryPolicy
 
 _CODEX_AUTH_ENV_KEYS = ("OPENAI_API_KEY",)
 _SUPPORTED_CREDENTIAL_STORES = {"file", "keyring", "auto"}
 _CREDENTIAL_STORE_RE = re.compile(
     r"^\s*cli_auth_credentials_store\s*=\s*(?P<value>.+?)\s*(?:#.*)?$"
+)
+_TRANSIENT_CLI_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection reset",
+    "econnreset",
+    "socket hang up",
+    "broken pipe",
+    "temporarily unavailable",
+    "temporary failure",
+    "eai_again",
+    "network error",
+    "tls",
+)
+_CODEX_NON_RETRYABLE_MARKERS = (
+    "not logged in",
+    "authentication",
+    "unauthorized",
+    "permission denied",
+    "sandbox",
+    "invalid model",
+    "unknown option",
+    "unknown argument",
 )
 
 
@@ -404,7 +427,7 @@ class CodexProvider(Provider):
         self._ensure_oauthpy_state()
         return "oauthpy"
 
-    async def stream(
+    async def _stream_once(
         self,
         prompt: str,
         *,
@@ -450,6 +473,45 @@ class CodexProvider(Provider):
 
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
+
+    def _retry_decision(
+        self,
+        exc: Exception,
+        *,
+        policy: RetryPolicy,
+        events_yielded: int,
+    ) -> RetryDecision:
+        if events_yielded:
+            return RetryDecision(False, "events_already_yielded")
+        if isinstance(exc, TimeoutExceededError):
+            return RetryDecision(policy.retry_on_timeout, "timeout")
+        if not isinstance(exc, ProtocolError):
+            return RetryDecision(False, "not_retryable")
+        cause = exc.__cause__
+        if not isinstance(cause, CommandExecutionError):
+            return RetryDecision(False, "protocol_error")
+        text = f"{exc}\n{cause.stderr or ''}".lower()
+        if _has_marker(text, _CODEX_NON_RETRYABLE_MARKERS):
+            return RetryDecision(False, "non_retryable_codex_error")
+        if _has_marker(text, _TRANSIENT_CLI_MARKERS):
+            return RetryDecision(True, "transient_codex_cli_error")
+        return RetryDecision(False, "codex_cli_error")
+
+    def _retry_context(
+        self,
+        *,
+        cwd: str | os.PathLike[str] | None,
+        model: str | None,
+        provider_options: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": self.name,
+            "transport": self.transport,
+            "binary": self._binary,
+            "requested_source": self._auth_source,
+            "model": model,
+            "cwd": os.fspath(cwd) if cwd is not None else None,
+        }
 
     def _usage(self, events: list[Event]) -> Usage | None:
         for event in reversed(events):
@@ -558,6 +620,10 @@ def _float_value(value: Any) -> float | None:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
     return None
+
+
+def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
 
 
 __all__ = ["CodexProvider", "classify_event", "parse_jsonl"]

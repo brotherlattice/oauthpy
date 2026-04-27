@@ -172,6 +172,34 @@ Interactive helpers mirror the upstream naming:
 
 Inside `oauthpy interactive`, use `/model NAME`, `/model clear`, `/effort LEVEL`, `/effort clear`, `/models`, and `/efforts`.
 
+## Retry/backoff for transient provider failures
+
+Retries are **off by default**. A plain `Client("claude").run(...)`, `Client("codex").run(...)`, or `Client("gemini").run(...)` call still fails fast and preserves existing one-shot semantics.
+
+For long-running batch or benchmark workloads, opt in through common `provider_options` keys:
+
+```python
+from oauthpy import Client
+
+result = Client("claude").run(
+    prompt,
+    cwd=".",
+    timeout=180,
+    provider_options={
+        "max_retries": 3,
+        "retry_backoff_s": 2,
+        "retry_backoff_max_s": 10,
+        "retry_jitter_s": 0.25,
+    },
+)
+```
+
+`oauthpy` only retries provider/transport failures it can classify as transient. Examples include Claude SDK message-reader failures such as `Fatal error in message reader`, configured Codex/Gemini timeouts, and temporary CLI/network failures before usable output is emitted. It does **not** retry auth failures, invalid model/config errors, explicit permission or sandbox denials, deterministic output/schema failures, or timeouts unless `retry_on_timeout=True` is set.
+
+If retries are exhausted, oauthpy raises one structured `CommandExecutionError` with redacted per-attempt diagnostics. If a later attempt succeeds, `RunResult.raw["retry"]` contains retry metadata such as attempt count, retry count, failed-attempt summaries, and total backoff time.
+
+Use retries carefully with tool-mutating prompts: every retry can repeat provider work and may increase cost or side effects.
+
 ## Auth-source selection
 
 `Client(provider, auth_source="auto", oauthpy_home=None)` keeps the shared API small while making auth state explicit:

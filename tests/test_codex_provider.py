@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from oauthpy import CommandExecutionError, EventKind, ProtocolError, ProviderNotInstalledError
+from oauthpy import (
+    AuthRequiredError,
+    CommandExecutionError,
+    EventKind,
+    ProtocolError,
+    ProviderNotInstalledError,
+    TimeoutExceededError,
+)
 from oauthpy._subprocess import CompletedProcess
 from oauthpy.defaults import DEFAULT_CODEX_REASONING_EFFORT
 from oauthpy.providers import codex as codex_mod
@@ -434,3 +441,70 @@ async def test_codex_exec_error_includes_resolved_source_and_redacted_stderr(
     assert "Windows launcher failed" in message
     assert "sk-abcdefghijklmnopqrstuvwxyz1234" not in message
     assert "***REDACTED***" in message
+
+
+async def test_codex_timeout_retries_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    calls = 0
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutExceededError("codex stream timed out")
+        yield '{"type": "agent_message", "text": "retry ok"}'
+        yield '{"type": "task_complete"}'
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    result = await provider.run(
+        "p",
+        provider_options={
+            "max_retries": 1,
+            "retry_on_timeout": True,
+            "retry_backoff_s": 0,
+            "retry_jitter_s": 0,
+        },
+    )
+
+    assert calls == 2
+    assert result.text == "retry ok"
+    assert isinstance(result.raw, dict)
+    assert result.raw["retry"]["retry_count"] == 1
+
+
+async def test_codex_timeout_does_not_retry_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    calls = 0
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        nonlocal calls
+        calls += 1
+        raise TimeoutExceededError("codex stream timed out")
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    with pytest.raises(TimeoutExceededError):
+        await provider.run("p", provider_options={"max_retries": 2})
+    assert calls == 1
+
+
+async def test_codex_auth_error_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codex_mod._subprocess, "which", lambda _binary: "/usr/local/bin/codex")
+    calls = 0
+
+    async def fake_stream_lines(argv: list[str], **_: object) -> AsyncIterator[str]:
+        nonlocal calls
+        calls += 1
+        raise CommandExecutionError("codex exited", returncode=1, stderr="not logged in")
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(codex_mod._subprocess, "stream_lines", fake_stream_lines)
+    provider = codex_mod.CodexProvider(auth_source="external")
+    with pytest.raises(AuthRequiredError):
+        await provider.run(
+            "p",
+            provider_options={"max_retries": 2, "retry_backoff_s": 0, "retry_jitter_s": 0},
+        )
+    assert calls == 1

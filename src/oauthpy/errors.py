@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from ._redact import redact
 
 
@@ -35,14 +38,26 @@ class CommandExecutionError(OauthPyError):
         *,
         returncode: int | None = None,
         stderr: str | None = None,
+        details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.returncode = returncode
         self.stderr = redact(stderr) if stderr else None
+        self.details = _redact_details(details or {})
 
 
 class TimeoutExceededError(OauthPyError):
     """Raised when a run or stream exceeds its timeout."""
+
+
+def _redact_details(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, Mapping):
+        return {str(key): _redact_details(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_redact_details(item) for item in value]
+    return value
 
 
 __all__ = [

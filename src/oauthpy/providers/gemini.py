@@ -18,9 +18,10 @@ from ..errors import (
     OauthPyError,
     ProtocolError,
     ProviderNotInstalledError,
+    TimeoutExceededError,
 )
 from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
-from .base import Provider
+from .base import Provider, RetryDecision, RetryPolicy
 
 _GEMINI_ENV_KEYS = (
     "GEMINI_API_KEY",
@@ -30,6 +31,33 @@ _GEMINI_ENV_KEYS = (
     "GOOGLE_GENAI_USE_GCA",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
+)
+_TRANSIENT_CLI_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection reset",
+    "econnreset",
+    "socket hang up",
+    "broken pipe",
+    "temporarily unavailable",
+    "temporary failure",
+    "eai_again",
+    "network error",
+    "tls",
+)
+_GEMINI_NON_RETRYABLE_MARKERS = (
+    "please set an auth method",
+    "authentication",
+    "unauthorized",
+    "credentials",
+    "api key",
+    "permission denied",
+    "eperm",
+    "settings.json",
+    "projects.json",
+    "invalid model",
+    "unknown option",
+    "unknown argument",
 )
 
 
@@ -185,7 +213,7 @@ class GeminiProvider(Provider):
                 returncode=result.returncode,
             )
 
-    async def stream(
+    async def _stream_once(
         self,
         prompt: str,
         *,
@@ -233,6 +261,45 @@ class GeminiProvider(Provider):
 
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
+
+    def _retry_decision(
+        self,
+        exc: Exception,
+        *,
+        policy: RetryPolicy,
+        events_yielded: int,
+    ) -> RetryDecision:
+        if events_yielded:
+            return RetryDecision(False, "events_already_yielded")
+        if isinstance(exc, TimeoutExceededError):
+            return RetryDecision(policy.retry_on_timeout, "timeout")
+        if not isinstance(exc, ProtocolError):
+            return RetryDecision(False, "not_retryable")
+        cause = exc.__cause__
+        if not isinstance(cause, CommandExecutionError):
+            return RetryDecision(False, "protocol_error")
+        text = f"{exc}\n{cause.stderr or ''}".lower()
+        if _has_marker(text, _GEMINI_NON_RETRYABLE_MARKERS):
+            return RetryDecision(False, "non_retryable_gemini_error")
+        if _has_marker(text, _TRANSIENT_CLI_MARKERS):
+            return RetryDecision(True, "transient_gemini_cli_error")
+        return RetryDecision(False, "gemini_cli_error")
+
+    def _retry_context(
+        self,
+        *,
+        cwd: str | os.PathLike[str] | None,
+        model: str | None,
+        provider_options: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": self.name,
+            "transport": self.transport,
+            "binary": self._binary,
+            "requested_source": self._auth_source,
+            "model": model or DEFAULT_GEMINI_MODEL,
+            "cwd": os.fspath(cwd) if cwd is not None else None,
+        }
 
     def _build_argv(
         self,
@@ -472,6 +539,10 @@ def _gemini_exec_error_message(exc: CommandExecutionError) -> str:
     if not stderr:
         return message
     return f"{message}\nstderr:\n{redact(stderr[-2000:])}"
+
+
+def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in text for marker in markers)
 
 
 __all__ = ["GeminiProvider", "classify_event", "parse_jsonl"]

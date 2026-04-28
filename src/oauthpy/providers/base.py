@@ -172,18 +172,21 @@ class Provider(ABC):
                 elapsed = time.monotonic() - start
                 return RunResult(
                     provider=self.name,
-                    transport=self.transport,
+                    transport=self._transport_for_events(events),
                     model=model,
                     text=self._final_text(events),
                     events=tuple(events),
                     elapsed_s=elapsed,
                     cwd=os.fspath(cwd) if cwd is not None else None,
                     usage=self._usage(events),
-                    raw=_retry_success_raw(
-                        policy,
-                        attempts=attempts,
-                        attempt=attempt,
-                        total_backoff_s=total_backoff_s,
+                    raw=_merge_run_raw(
+                        self._raw_for_events(events),
+                        _retry_success_raw(
+                            policy,
+                            attempts=attempts,
+                            attempt=attempt,
+                            total_backoff_s=total_backoff_s,
+                        ),
                     ),
                 )
             except Exception as exc:
@@ -225,6 +228,16 @@ class Provider(ABC):
 
     def _usage(self, events: list[Event]) -> Usage | None:
         """Extract optional provider usage from a drained event list."""
+
+        return None
+
+    def _transport_for_events(self, events: list[Event]) -> TransportName:
+        """Return the transport used by the completed event sequence."""
+
+        return self.transport
+
+    def _raw_for_events(self, events: list[Event]) -> Any:
+        """Return optional provider-level raw payload for a completed run."""
 
         return None
 
@@ -388,6 +401,18 @@ def _retry_success_raw(
             "total_backoff_s": total_backoff_s,
         }
     }
+
+
+def _merge_run_raw(provider_raw: Any, retry_raw: dict[str, Any] | None) -> Any:
+    if provider_raw is None:
+        return retry_raw
+    if retry_raw is None:
+        return provider_raw
+    if isinstance(provider_raw, Mapping):
+        merged = dict(provider_raw)
+        merged.update(retry_raw)
+        return merged
+    return {"provider": provider_raw, **retry_raw}
 
 
 def _format_attempts(attempts: list[dict[str, Any]]) -> str:

@@ -5,7 +5,7 @@
 Codex, Claude Code, and Gemini expose a "run a prompt locally, using my login" capability, but through different integration surfaces:
 
 - **Codex** does not ship a stable Python SDK in v0.1. It does ship a mature `codex exec --json` mode in the official CLI that emits a newline-delimited JSON event stream covering thread/turn lifecycle events, item events, messages, reasoning, plan updates, tool calls, command executions, file changes, errors, and `turn.completed`. That stream is our supported local programmatic surface, so `oauthpy.providers.codex` parses it.
-- **Claude Code** ships `claude-agent-sdk` on PyPI with a streaming `query(prompt, options=ClaudeAgentOptions(...))` entrypoint. Messages are typed (`SystemMessage`, `AssistantMessage`, `ResultMessage`, ...). There's no reason to shell out to the `claude` CLI from Python when the SDK is right there, so `oauthpy.providers.claude` uses it directly.
+- **Claude Code** ships `claude-agent-sdk` on PyPI with a streaming `query(prompt, options=ClaudeAgentOptions(...))` entrypoint. Messages are typed (`SystemMessage`, `AssistantMessage`, `ResultMessage`, ...). There's no reason to shell out to the `claude` CLI from Python when the SDK is right there, so `oauthpy.providers.claude` uses it directly. Claude JSON-schema structured output is also SDK-primary via `ClaudeAgentOptions(output_format=...)`; the CLI JSON-schema path is only a compatibility fallback when the installed SDK cannot support that option.
 - **Gemini** ships an official `gemini` CLI with headless JSON output. `oauthpy.providers.gemini` drives `gemini --prompt ... --output-format stream-json` and parses the JSONL event stream. It intentionally does not scrape the interactive TUI.
 
 The consequence is that the two adapters look internally very different but converge on the same `Event` / `RunResult` / `AuthStatus` shapes, which is the entire point of this package.
@@ -38,7 +38,7 @@ Auth state is resolved before provider calls:
 
 Retries are disabled by default (`max_retries=0`) to preserve one-shot semantics. When enabled, the wrapper only retries failures before public events have been yielded. Each provider owns its retry classifier because Claude SDK reader failures, Codex CLI subprocess failures, and Gemini CLI failures expose different diagnostics.
 
-Successful retried runs store metadata in `RunResult.raw["retry"]`. Exhausted retries raise a single redacted `CommandExecutionError` containing all failed attempts.
+Successful retried runs store metadata in `RunResult.raw["retry"]`. Provider-specific successful runs may also add raw metadata such as `RunResult.raw["claude_sdk"]` for Claude SDK structured output or `RunResult.raw["claude_cli"]` for Claude CLI fallback. Exhausted retries raise a single redacted `CommandExecutionError` containing all failed attempts.
 
 ## Event taxonomy
 

@@ -19,6 +19,8 @@ class ClaudeAgentOptions:
     env: dict[str, str] = field(default_factory=dict)
     stderr: Any | None = None
     allowed_tools: list[str] = field(default_factory=list)
+    output_format: dict[str, Any] | None = None
+    max_turns: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __init__(self, **kwargs: Any) -> None:
@@ -28,6 +30,8 @@ class ClaudeAgentOptions:
         self.env = kwargs.pop("env", {})
         self.stderr = kwargs.pop("stderr", None)
         self.allowed_tools = kwargs.pop("allowed_tools", [])
+        self.output_format = kwargs.pop("output_format", None)
+        self.max_turns = kwargs.pop("max_turns", None)
         self.extra = kwargs
 
 
@@ -67,6 +71,10 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     total_cost_usd: float | None = None
     is_error: bool = False
+    structured_output: Any | None = None
+    subtype: str | None = None
+    stop_reason: str | None = None
+    num_turns: int | None = None
 
 
 def make_query(messages: list[Any]) -> Any:

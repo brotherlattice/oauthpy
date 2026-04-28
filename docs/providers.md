@@ -107,6 +107,7 @@ Current Codex JSONL schema support includes top-level `thread.started`, `turn.st
 | `setting_sources` | restrict which `.claude/` dirs load |
 | `resume` | resume a captured `session_id` |
 | `env` | merged with oauthpy's resolved SDK environment |
+| `output_format` | structured output config, e.g. `{"type": "json_schema", "schema": schema}` |
 
 `cwd` and `model` are set from the shared API.
 
@@ -123,6 +124,42 @@ result = Client("claude").run(
 )
 print(result.text)
 ```
+
+**Structured output**:
+
+```python
+from oauthpy import Client
+
+schema = {
+    "type": "object",
+    "properties": {
+        "relationship": {"type": "integer"},
+        "unrelated": {"type": "integer"},
+    },
+    "required": ["relationship", "unrelated"],
+}
+
+result = Client("claude").run(
+    "Classify whether these two terms are related",
+    cwd=".",
+    provider_options={"output_format": {"type": "json_schema", "schema": schema}},
+)
+print(result.text)       # compact JSON, e.g. {"relationship":0,"unrelated":1}
+print(result.transport)  # claude-agent-sdk, or claude-cli-json only for fallback
+```
+
+Claude structured output is SDK-primary. oauthpy passes `output_format` into
+`ClaudeAgentOptions`, waits for `ResultMessage.structured_output`, and exposes
+that payload as compact JSON in `RunResult.text`. If `max_turns` is supplied
+below `2`, oauthpy passes `2` because Claude's structured-output finalization
+can require a second internal turn.
+
+CLI fallback (`claude --print --output-format json --json-schema ...`) is only
+used when SDK support is unavailable, such as a missing SDK or an SDK/options
+class that rejects `output_format`. It is not used for Claude policy refusals,
+SDK `is_error=True` result messages, meaningful SDK error payloads, or transient
+SDK reader failures covered by the retry layer. SDK schema successes use
+transport `claude-agent-sdk`; CLI fallback successes use `claude-cli-json`.
 
 **Event sources**: mapping from SDK message/block types:
 

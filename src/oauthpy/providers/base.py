@@ -170,21 +170,22 @@ class Provider(ABC):
                 ):
                     events.append(event)
                 elapsed = time.monotonic() - start
+                retry_raw = _retry_success_raw(
+                    policy,
+                    attempts=attempts,
+                    attempt=attempt,
+                    total_backoff_s=total_backoff_s,
+                )
                 return RunResult(
                     provider=self.name,
-                    transport=self.transport,
+                    transport=self._transport_for_result(events, call_options),
                     model=model,
                     text=self._final_text(events),
                     events=tuple(events),
                     elapsed_s=elapsed,
                     cwd=os.fspath(cwd) if cwd is not None else None,
                     usage=self._usage(events),
-                    raw=_retry_success_raw(
-                        policy,
-                        attempts=attempts,
-                        attempt=attempt,
-                        total_backoff_s=total_backoff_s,
-                    ),
+                    raw=self._raw_result(events, retry_raw),
                 )
             except Exception as exc:
                 if not policy.enabled:
@@ -227,6 +228,36 @@ class Provider(ABC):
         """Extract optional provider usage from a drained event list."""
 
         return None
+
+    def _transport_for_options(
+        self, provider_options: Mapping[str, Any] | None
+    ) -> TransportName:
+        """Return the transport used for this run.
+
+        Most providers have a single transport. Providers with a fallback or
+        special one-shot path can override this to keep RunResult diagnostics
+        precise while still using the shared retry loop.
+        """
+
+        return self.transport
+
+    def _transport_for_result(
+        self,
+        events: list[Event],
+        provider_options: Mapping[str, Any] | None,
+    ) -> TransportName:
+        """Return the transport that produced this completed result."""
+
+        return self._transport_for_options(provider_options)
+
+    def _raw_result(
+        self,
+        events: list[Event],
+        retry_raw: dict[str, Any] | None,
+    ) -> Any:
+        """Build RunResult.raw from normalized events and retry metadata."""
+
+        return retry_raw
 
     def _retry_decision(
         self,

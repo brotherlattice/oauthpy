@@ -19,7 +19,12 @@ ProviderName = Literal["codex", "claude", "gemini"]
 AuthSource = Literal["auto", "oauthpy", "external"]
 """Where oauthpy should look for provider auth/config."""
 
-TransportName = Literal["codex-cli-jsonl", "claude-agent-sdk", "gemini-cli-jsonl"]
+TransportName = Literal[
+    "codex-cli-jsonl",
+    "claude-agent-sdk",
+    "claude-cli-json",
+    "gemini-cli-jsonl",
+]
 """How a provider is being driven under the hood."""
 
 JsonScalar = str | int | float | bool | None

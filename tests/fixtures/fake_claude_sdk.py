@@ -67,6 +67,8 @@ class ResultMessage:
     usage: dict[str, Any] | None = None
     total_cost_usd: float | None = None
     is_error: bool = False
+    structured_output: dict[str, Any] | None = None
+    stop_reason: str | None = None
 
 
 def make_query(messages: list[Any]) -> Any:

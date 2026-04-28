@@ -23,8 +23,13 @@ from ..auth import (
     resolve_oauthpy_home,
 )
 from ..defaults import DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT
-from ..errors import CommandExecutionError, ProviderNotInstalledError, TimeoutExceededError
-from ..models import AuthSource, AuthStatus, Event, EventKind, Usage
+from ..errors import (
+    CommandExecutionError,
+    ProtocolError,
+    ProviderNotInstalledError,
+    TimeoutExceededError,
+)
+from ..models import AuthSource, AuthStatus, Event, EventKind, TransportName, Usage
 from .base import Provider, RetryDecision, RetryPolicy
 
 _CLAUDE_AUTH_ENV_KEYS = (
@@ -63,6 +68,14 @@ _CLAUDE_NON_RETRYABLE_MARKERS = (
     "unknown model",
     "claudeagentoptions rejected",
     "unsupported",
+    "usage policy",
+    "refusal",
+)
+_CLAUDE_POLICY_REFUSAL_MARKERS = (
+    "usage policy",
+    "unable to respond",
+    "stop_reason",
+    "refusal",
 )
 
 
@@ -168,8 +181,13 @@ def _events_from_sdk_message(msg: Any) -> list[Event]:
             text = _first_str(getattr(msg, "result", None), _join_strs(errors))
             events.append(Event(kind=EventKind.ERROR, text=text, raw=msg))
         result = getattr(msg, "result", None)
+        structured_text = _structured_output_text(_structured_output_from_raw(msg))
         events.append(
-            Event(kind=EventKind.DONE, text=result if isinstance(result, str) else None, raw=msg)
+            Event(
+                kind=EventKind.DONE,
+                text=structured_text or (result if isinstance(result, str) else None),
+                raw=msg,
+            )
         )
         return events
 
@@ -298,6 +316,102 @@ def _build_options(
         raise ProviderNotInstalledError(
             f"claude-agent-sdk ClaudeAgentOptions rejected kwargs {list(kwargs)}: {exc}"
         ) from exc
+
+
+def _json_schema_output_format(
+    provider_options: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    options = dict(provider_options or {})
+    output_format = options.get("output_format")
+    if not isinstance(output_format, Mapping):
+        return None
+    if output_format.get("type") != "json_schema":
+        return None
+    return output_format
+
+
+def _normalize_schema_provider_options(
+    provider_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    options = dict(provider_options or {})
+    output_format = _json_schema_output_format(options)
+    if output_format is None:
+        return options
+    schema = output_format.get("schema")
+    if not isinstance(schema, Mapping):
+        raise ProtocolError("Claude output_format.schema must be a JSON schema mapping.")
+    if "max_turns" in options and options["max_turns"] is not None:
+        options["max_turns"] = _claude_schema_max_turns(options["max_turns"])
+    return options
+
+
+def _claude_cli_list_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list | tuple):
+        return ",".join(str(item) for item in value)
+    return str(value)
+
+
+def _claude_schema_max_turns(value: Any) -> int:
+    try:
+        max_turns = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(
+            "Claude structured-output provider_options.max_turns must be an integer."
+        ) from exc
+    if max_turns < 1:
+        raise ProtocolError(
+            "Claude structured-output provider_options.max_turns must be >= 1."
+        )
+    # Claude structured-output mode performs an internal finalization step.
+    # With max_turns=1, Claude can stop before emitting structured_output even
+    # when the model has already produced the answer.
+    return max(2, max_turns)
+
+
+def _structured_output_from_raw(raw: Any) -> Any:
+    if isinstance(raw, Mapping):
+        return raw.get("structured_output")
+    return getattr(raw, "structured_output", None)
+
+
+def _structured_output_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _is_policy_refusal_payload(payload: Mapping[str, Any], text: str | None) -> bool:
+    if str(payload.get("stop_reason") or "").lower() == "refusal":
+        return True
+    return _has_marker(text or "", _CLAUDE_POLICY_REFUSAL_MARKERS)
+
+
+def _jsonable(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def _sdk_result_payload(raw: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for attr in (
+        "type",
+        "subtype",
+        "is_error",
+        "result",
+        "structured_output",
+        "stop_reason",
+        "terminal_reason",
+        "num_turns",
+        "total_cost_usd",
+        "session_id",
+    ):
+        if hasattr(raw, attr):
+            payload[attr] = _jsonable(getattr(raw, attr))
+    for attr in ("usage", "model_usage"):
+        if hasattr(raw, attr):
+            payload[attr] = _jsonable(getattr(raw, attr))
+    return payload
 
 
 class ClaudeProvider(Provider):
@@ -554,6 +668,18 @@ class ClaudeProvider(Provider):
             if event.kind is not EventKind.DONE:
                 continue
             raw = event.raw
+            if isinstance(raw, Mapping):
+                usage = raw.get("usage")
+                cost = raw.get("total_cost_usd")
+                if isinstance(usage, Mapping):
+                    return _usage_from_mapping(usage, cost)
+                model_usage = raw.get("modelUsage")
+                if isinstance(model_usage, Mapping):
+                    for entry in model_usage.values():
+                        if isinstance(entry, Mapping):
+                            return _usage_from_mapping(entry, cost)
+                if cost is not None:
+                    return Usage(cost_usd=_float_value(cost))
             usage = getattr(raw, "usage", None)
             model_usage = getattr(raw, "model_usage", None)
             cost = getattr(raw, "total_cost_usd", None)
@@ -564,6 +690,37 @@ class ClaudeProvider(Provider):
             if cost is not None:
                 return Usage(cost_usd=_float_value(cost))
         return None
+
+    def _transport_for_result(
+        self,
+        events: list[Event],
+        provider_options: Mapping[str, Any] | None,
+    ) -> TransportName:
+        for event in reversed(events):
+            if event.kind is EventKind.DONE and isinstance(event.raw, Mapping):
+                if "structured_output" in event.raw:
+                    return "claude-cli-json"
+        return self.transport
+
+    def _raw_result(
+        self,
+        events: list[Event],
+        retry_raw: dict[str, Any] | None,
+    ) -> Any:
+        for event in reversed(events):
+            if event.kind is not EventKind.DONE:
+                continue
+            structured_output = _structured_output_from_raw(event.raw)
+            if structured_output is None:
+                continue
+            if isinstance(event.raw, Mapping):
+                raw: dict[str, Any] = {"claude_cli": event.raw}
+            else:
+                raw = {"claude_sdk": _sdk_result_payload(event.raw)}
+            if retry_raw:
+                raw.update(retry_raw)
+            return raw
+        return retry_raw
 
     async def _resolve_run_source(self) -> AuthSource:
         if self._auth_source in {"oauthpy", "external"}:
@@ -597,6 +754,34 @@ class ClaudeProvider(Provider):
         env: Mapping[str, str] | None = None,
         provider_options: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[Event]:
+        if _json_schema_output_format(provider_options) is not None:
+            try:
+                events = await self._collect_schema_sdk_once(
+                    prompt,
+                    cwd=cwd,
+                    model=model,
+                    timeout=timeout,
+                    env=env,
+                    provider_options=provider_options,
+                )
+                self._validate_schema_sdk_events(events)
+            except (CommandExecutionError, ProviderNotInstalledError) as exc:
+                if not self._schema_cli_fallback_allowed(exc):
+                    raise
+                async for event in self._stream_schema_cli_once(
+                    prompt,
+                    cwd=cwd,
+                    model=model,
+                    timeout=timeout,
+                    env=env,
+                    provider_options=provider_options,
+                ):
+                    yield event
+                return
+            for event in events:
+                yield event
+            return
+
         sdk = _sdk()
         if sdk is None:
             raise ProviderNotInstalledError(
@@ -685,6 +870,309 @@ class ClaudeProvider(Provider):
         if not emitted_done:
             yield Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None)
 
+    async def _collect_schema_sdk_once(
+        self,
+        prompt: str,
+        *,
+        cwd: str | os.PathLike[str] | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> list[Event]:
+        sdk = _sdk()
+        if sdk is None:
+            raise ProviderNotInstalledError(
+                "claude-agent-sdk is not installed. Reinstall oauthpy or run "
+                "`pip install claude-agent-sdk`."
+            )
+        source = await self._resolve_run_source()
+        query, options_cls = sdk
+        diagnostics = _ClaudeDiagnostics()
+        resolved_model = model or DEFAULT_CLAUDE_MODEL
+        options = _build_options(
+            options_cls,
+            cwd=cwd,
+            model=model,
+            provider_options=_normalize_schema_provider_options(provider_options),
+            env=self._sdk_env(source, env),
+            diagnostics=diagnostics,
+        )
+
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else (loop.time() + timeout)
+        stream_obj: Any | None = None
+        iterator: AsyncIterator[Any] | None = None
+        events: list[Event] = []
+        emitted_done = False
+        events_received = 0
+        phase = "startup"
+
+        async def _next_msg() -> Any:
+            if iterator is None:  # pragma: no cover - defensive internal guard
+                raise RuntimeError("claude-agent-sdk stream was not initialized")
+            if deadline is None:
+                return await iterator.__anext__()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutExceededError(f"claude stream timed out after {timeout}s")
+            try:
+                return await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutExceededError(f"claude stream timed out after {timeout}s") from exc
+
+        with diagnostics.capture_sdk_logger():
+            try:
+                stream_obj = query(prompt=prompt, options=options)
+                if inspect.iscoroutine(stream_obj):
+                    stream_obj = await stream_obj
+                iterator = stream_obj.__aiter__()
+                phase = "stream"
+
+                while True:
+                    try:
+                        msg = await _next_msg()
+                    except StopAsyncIteration:
+                        break
+                    error_text = _sdk_error_payload_text(msg)
+                    if error_text:
+                        phase = "error_payload"
+                        raise RuntimeError(error_text)
+                    for event in _events_from_sdk_message(msg):
+                        if event.kind is EventKind.DONE:
+                            emitted_done = True
+                        events_received += 1
+                        events.append(event)
+            except (CommandExecutionError, TimeoutExceededError):
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                schema_error = self._schema_sdk_error_from_events(events)
+                if schema_error is not None:
+                    raise schema_error from exc
+                raise _claude_runtime_error(
+                    exc,
+                    diagnostics,
+                    source=source,
+                    binary=_safe_which(self._binary),
+                    model=resolved_model,
+                    phase=phase,
+                    events_received=events_received,
+                ) from exc
+            finally:
+                if stream_obj is not None:
+                    aclose = getattr(stream_obj, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:  # pragma: no cover - best-effort cleanup
+                            pass
+
+        if not emitted_done:
+            events.append(Event(kind=EventKind.DONE, text=None, timestamp=None, raw=None))
+        return events
+
+    def _validate_schema_sdk_events(self, events: list[Event]) -> None:
+        schema_error = self._schema_sdk_error_from_events(events)
+        if schema_error is not None:
+            raise schema_error
+        for event in reversed(events):
+            if event.kind is EventKind.DONE:
+                if _structured_output_from_raw(event.raw) is not None:
+                    return
+        raise CommandExecutionError(
+            "Claude structured-output SDK did not return structured_output.",
+            details={"provider": "claude", "transport": self.transport},
+        )
+
+    def _schema_sdk_error_from_events(
+        self, events: list[Event]
+    ) -> CommandExecutionError | None:
+        for event in reversed(events):
+            raw = event.raw
+            is_error = event.kind is EventKind.ERROR
+            if isinstance(raw, Mapping):
+                is_error = is_error or bool(raw.get("is_error"))
+                payload = dict(raw)
+            else:
+                is_error = is_error or bool(getattr(raw, "is_error", False))
+                payload = _sdk_result_payload(raw)
+            if not is_error:
+                continue
+            text = _first_str(
+                event.text,
+                payload.get("result"),
+                payload.get("error"),
+                "Claude structured-output SDK returned an error result.",
+            )
+            error_kind = (
+                "policy_refusal"
+                if _is_policy_refusal_payload(payload, text)
+                else "sdk_error_result"
+            )
+            return CommandExecutionError(
+                f"Claude structured-output SDK returned an error result: {text}",
+                details={
+                    "provider": "claude",
+                    "transport": self.transport,
+                    "error_kind": error_kind,
+                    "sdk_result": payload,
+                },
+            )
+        return None
+
+    def _schema_cli_fallback_allowed(self, exc: Exception) -> bool:
+        if isinstance(exc, ProviderNotInstalledError):
+            return True
+        if not isinstance(exc, CommandExecutionError):
+            return False
+        text = _diagnostic_text(exc)
+        return "claudeagentoptions rejected" in text and "output_format" in text
+
+    async def _stream_schema_cli_once(
+        self,
+        prompt: str,
+        *,
+        cwd: str | os.PathLike[str] | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+    ) -> AsyncIterator[Event]:
+        claude_bin = _subprocess.which(self._binary)
+        if claude_bin is None:
+            raise ProviderNotInstalledError(
+                "claude CLI not found. Install Claude Code from https://code.claude.com/."
+            )
+        source = await self._resolve_run_source()
+        options = _normalize_schema_provider_options(provider_options)
+        output_format = _json_schema_output_format(options)
+        if output_format is None:  # pragma: no cover - guarded by caller
+            raise ProtocolError(
+                "Claude JSON schema CLI mode requires output_format.type=json_schema"
+            )
+        schema = output_format.get("schema")
+        if not isinstance(schema, Mapping):
+            raise ProtocolError("Claude output_format.schema must be a JSON schema mapping.")
+        options.pop("output_format", None)
+        argv = self._schema_cli_argv(
+            claude_bin,
+            schema=schema,
+            model=model,
+            provider_options=options,
+        )
+        result = await _subprocess.run(
+            argv,
+            cwd=cwd,
+            env=self._cli_env(source, env),
+            timeout=timeout,
+            stdin=prompt,
+        )
+        if result.returncode != 0:
+            raise CommandExecutionError(
+                f"claude --print exited with code {result.returncode}",
+                returncode=result.returncode,
+                stderr=result.stderr,
+                details={
+                    "provider": "claude",
+                    "transport": "claude-cli-json",
+                    "source": source,
+                    "binary": claude_bin,
+                    "model": model or options.get("model") or DEFAULT_CLAUDE_MODEL,
+                    "stdout_tail": result.stdout[-2000:] or None,
+                    "stderr_tail": result.stderr[-2000:] or None,
+                },
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise ProtocolError(
+                "Claude structured-output CLI returned invalid JSON: "
+                f"{result.stdout[:500]!r}"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise ProtocolError("Claude structured-output CLI returned non-object JSON.")
+        if payload.get("is_error"):
+            raise CommandExecutionError(
+                "Claude structured-output CLI returned an error result.",
+                returncode=None,
+                stderr=result.stderr,
+                details={
+                    "provider": "claude",
+                    "transport": "claude-cli-json",
+                    "source": source,
+                    "binary": claude_bin,
+                    "payload": payload,
+                },
+            )
+        if "structured_output" not in payload:
+            raise ProtocolError(
+                "Claude structured-output CLI response did not include structured_output."
+            )
+        text = json.dumps(payload["structured_output"], separators=(",", ":"))
+        yield Event(kind=EventKind.MESSAGE, text=text, timestamp=None, raw=payload)
+        yield Event(kind=EventKind.DONE, text=text, timestamp=None, raw=payload)
+
+    def _schema_cli_argv(
+        self,
+        claude_bin: str,
+        *,
+        schema: Mapping[str, Any],
+        model: str | None,
+        provider_options: Mapping[str, Any],
+    ) -> list[str]:
+        options = dict(provider_options)
+        configured_model = options.pop("model", None)
+        resolved_model = model or configured_model or DEFAULT_CLAUDE_MODEL
+        reasoning_effort = options.pop("reasoning_effort", DEFAULT_CLAUDE_REASONING_EFFORT)
+        if "effort" not in options and reasoning_effort is not None:
+            options["effort"] = reasoning_effort
+        argv = [
+            claude_bin,
+            "--print",
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(schema, separators=(",", ":")),
+            "--model",
+            str(resolved_model),
+        ]
+        effort = options.pop("effort", None)
+        if effort is not None:
+            argv.extend(["--effort", str(effort)])
+        permission_mode = options.pop("permission_mode", None)
+        if permission_mode is not None:
+            argv.extend(["--permission-mode", str(permission_mode)])
+        max_turns = options.pop("max_turns", None)
+        if max_turns is not None:
+            argv.extend(["--max-turns", str(_claude_schema_max_turns(max_turns))])
+        max_budget = options.pop("max_budget_usd", None)
+        if max_budget is not None:
+            argv.extend(["--max-budget-usd", str(max_budget)])
+        tools = options.pop("tools", None)
+        if tools is not None:
+            argv.extend(["--tools", _claude_cli_list_value(tools)])
+        allowed_tools = options.pop("allowed_tools", None)
+        if allowed_tools:
+            argv.extend(["--allowed-tools", _claude_cli_list_value(allowed_tools)])
+        disallowed_tools = options.pop("disallowed_tools", None)
+        if disallowed_tools:
+            argv.extend(["--disallowed-tools", _claude_cli_list_value(disallowed_tools)])
+        extra_args = options.pop("extra_args", None)
+        if isinstance(extra_args, Mapping):
+            for flag, value in extra_args.items():
+                argv.append(f"--{flag}")
+                if value is not None:
+                    argv.append(str(value))
+        if options:
+            unsupported = ", ".join(sorted(str(key) for key in options))
+            raise ProtocolError(
+                "unsupported Claude structured-output provider_options keys: "
+                f"{unsupported}"
+            )
+        return argv
+
     def _retry_decision(
         self,
         exc: Exception,
@@ -755,6 +1243,16 @@ class ClaudeProvider(Provider):
                 env.update(user_env)
             env["CLAUDE_CONFIG_DIR"] = str(self._claude_config_dir)
         elif user_env:
+            env.update(user_env)
+        return env or None
+
+    def _cli_env(
+        self,
+        source: AuthSource,
+        user_env: Mapping[str, str] | None = None,
+    ) -> dict[str, str | None] | None:
+        env = dict(self._subprocess_env(source) or {})
+        if user_env:
             env.update(user_env)
         return env or None
 

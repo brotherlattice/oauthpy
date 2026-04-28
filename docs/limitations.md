@@ -26,6 +26,7 @@
 - **HTTP proxy/server.** The library is the product. A future proxy could wrap it; v0.1 does not include one.
 - **Full conversational session management.** `oauthpy interactive` is a local in-memory debugging helper, not a persistent session product. Multi-turn resume is only supported to the extent the underlying provider trivially allows it (e.g. Claude's `resume` option via `provider_options`).
 - **Automatic retries by default.** Retries are available for transient provider/transport failures, but they are disabled unless `provider_options["max_retries"]` is set. This avoids hidden extra cost and repeated tool side effects.
+- **Hiding provider refusals.** Claude structured-output support normalizes validated SDK `structured_output`, but it does not bypass or mask real Claude policy refusals, `is_error=True` result messages, or schema-generation failures. Those remain provider errors.
 
 ## Compliance notes
 

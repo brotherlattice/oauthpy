@@ -118,6 +118,34 @@ print(result.text)
 
 Streaming is identical: `async for event in Client("claude").stream(prompt, cwd="."): ...`.
 
+Structured output uses the official Claude Agent SDK first:
+
+```python
+from oauthpy import Client
+
+schema = {
+    "type": "object",
+    "properties": {
+        "relationship": {"type": "integer"},
+        "unrelated": {"type": "integer"},
+    },
+    "required": ["relationship", "unrelated"],
+}
+
+result = Client("claude").run(
+    "Classify whether term A is related to term B",
+    cwd=".",
+    provider_options={
+        "output_format": {"type": "json_schema", "schema": schema},
+        "max_turns": 1,  # oauthpy raises this to 2 for Claude schema finalization.
+    },
+)
+print(result.text)       # compact JSON, e.g. {"relationship":0,"unrelated":1}
+print(result.transport)  # claude-agent-sdk, unless SDK capability fallback was needed.
+```
+
+For Claude schema runs, oauthpy passes `output_format` to `ClaudeAgentOptions` and reads `ResultMessage.structured_output`. It only falls back to `claude --print --output-format json --json-schema ...` when the installed SDK is missing or does not support `output_format`. SDK refusals, `is_error=True` results, and retryable SDK reader crashes are not hidden by CLI fallback.
+
 ## Gemini quickstart
 
 Gemini is optional and shells out to the installed `gemini` CLI:

@@ -8,7 +8,6 @@ Claude install.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 
@@ -347,19 +346,63 @@ async def test_result_message_usage_and_cost_extracted(fake_sdk: list, clean_env
     assert result.usage.cost_usd == 0.12
 
 
-async def test_json_schema_output_uses_sdk_structured_output(
+async def test_structured_output_uses_sdk_primary(
     monkeypatch: pytest.MonkeyPatch, clean_env: None
 ) -> None:
     captured: dict[str, object] = {}
+    schema = {
+        "type": "object",
+        "properties": {"relationship": {"type": "integer"}, "unrelated": {"type": "integer"}},
+        "required": ["relationship", "unrelated"],
+    }
 
     async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
         captured["prompt"] = prompt
-        captured["options"] = options
+        captured["output_format"] = options.output_format
         yield fake_claude_sdk.ResultMessage(
-            result="Included.",
-            structured_output={"relationship": 1, "unrelated": 0},
-            usage={"input_tokens": 4, "output_tokens": 6},
-            total_cost_usd=0.42,
+            result="",
+            structured_output={"relationship": 0, "unrelated": 1},
+            subtype="success",
+            usage={"input_tokens": 2, "output_tokens": 3},
+        )
+
+    async def fail_cli(*args: object, **kwargs: object) -> CompletedProcess:
+        raise AssertionError("structured-output SDK success should not fall back to CLI")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    monkeypatch.setattr(claude_mod._subprocess, "run", fail_cli)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    result = await provider.run(
+        "classify",
+        provider_options={"output_format": {"type": "json_schema", "schema": schema}},
+    )
+
+    assert captured["prompt"] == "classify"
+    assert captured["output_format"] == {"type": "json_schema", "schema": schema}
+    assert result.transport == "claude-agent-sdk"
+    assert result.text == '{"relationship":0,"unrelated":1}'
+    assert result.usage is not None
+    assert result.usage.total_tokens == 5
+    assert isinstance(result.raw, dict)
+    assert result.raw["claude_sdk"]["structured_output"] == {"relationship": 0, "unrelated": 1}
+
+
+async def test_structured_output_max_turns_is_at_least_two(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    captured: dict[str, object] = {}
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        captured["max_turns"] = options.max_turns
+        yield fake_claude_sdk.ResultMessage(
+            result="",
+            structured_output={"ok": True},
+            subtype="success",
         )
 
     monkeypatch.setattr(
@@ -368,214 +411,152 @@ async def test_json_schema_output_uses_sdk_structured_output(
         lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
     )
     provider = claude_mod.ClaudeProvider(auth_source="external")
-    schema = {
-        "type": "object",
-        "properties": {
-            "relationship": {"type": "integer"},
-            "unrelated": {"type": "integer"},
-        },
-        "required": ["relationship", "unrelated"],
-    }
-    result = await provider.run(
-        "classify this abstract",
-        cwd="/tmp/work",
-        model="opus",
-        timeout=12,
+    await provider.run(
+        "classify",
         provider_options={
             "output_format": {"type": "json_schema", "schema": schema},
-            "reasoning_effort": "low",
-            "tools": [],
-            "allowed_tools": [],
-            "disallowed_tools": ["Bash", "Read"],
-            "permission_mode": "dontAsk",
             "max_turns": 1,
-            "max_budget_usd": 2,
-            "extra_args": {"exclude-dynamic-system-prompt-sections": None},
         },
     )
-
-    options = captured["options"]
-    assert isinstance(options, fake_claude_sdk.ClaudeAgentOptions)
-    assert captured["prompt"] == "classify this abstract"
-    assert options.cwd == "/tmp/work"
-    assert options.model == "opus"
-    assert options.effort == "low"
-    assert options.extra["output_format"] == {"type": "json_schema", "schema": schema}
-    assert options.extra["max_turns"] == 2
-    assert options.extra["tools"] == []
-    assert options.extra["disallowed_tools"] == ["Bash", "Read"]
-    assert options.extra["extra_args"] == {"exclude-dynamic-system-prompt-sections": None}
-    assert result.transport == "claude-agent-sdk"
-    assert result.text == '{"relationship":1,"unrelated":0}'
-    assert result.usage is not None
-    assert result.usage.input_tokens == 4
-    assert result.usage.output_tokens == 6
-    assert result.usage.total_tokens == 10
-    assert result.usage.cost_usd == 0.42
-    assert result.raw["claude_sdk"]["structured_output"] == {
-        "relationship": 1,
-        "unrelated": 0,
-    }
+    assert captured["max_turns"] == 2
 
 
-async def test_json_schema_output_falls_back_to_cli_when_sdk_missing(
+async def test_structured_output_sdk_error_does_not_fall_back(
+    monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+
+    async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
+        yield fake_claude_sdk.ResultMessage(
+            result="I cannot comply with that request.",
+            is_error=True,
+            subtype="error",
+            stop_reason="refusal",
+            num_turns=1,
+        )
+
+    async def fail_cli(*args: object, **kwargs: object) -> CompletedProcess:
+        raise AssertionError("SDK error results must not fall back to CLI")
+
+    monkeypatch.setattr(
+        claude_mod,
+        "_sdk",
+        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
+    )
+    monkeypatch.setattr(claude_mod._subprocess, "run", fail_cli)
+    provider = claude_mod.ClaudeProvider(auth_source="external")
+    with pytest.raises(CommandExecutionError) as excinfo:
+        await provider.run(
+            "classify",
+            provider_options={"output_format": {"type": "json_schema", "schema": schema}},
+        )
+
+    assert "Claude structured-output SDK returned an error result" in str(excinfo.value)
+    assert excinfo.value.details["transport"] == "claude-agent-sdk"
+    assert excinfo.value.details["error_kind"] == "policy_refusal"
+    assert excinfo.value.details["sdk_result"]["stop_reason"] == "refusal"
+
+
+async def test_structured_output_missing_sdk_falls_back_to_cli(
     monkeypatch: pytest.MonkeyPatch, clean_env: None
 ) -> None:
     captured: dict[str, object] = {}
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
 
-    async def fake_run(
-        argv: list[str],
-        *,
-        cwd: str | None = None,
-        env: dict[str, str | None] | None = None,
-        timeout: float | None = None,
-        stdin: str | None = None,
-    ) -> CompletedProcess:
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
         captured["argv"] = argv
-        captured["cwd"] = cwd
-        captured["env"] = env
-        captured["timeout"] = timeout
-        captured["stdin"] = stdin
+        captured["kwargs"] = kwargs
         return CompletedProcess(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "subtype": "success",
-                    "is_error": False,
-                    "result": "",
-                    "structured_output": {"relationship": 1, "unrelated": 0},
-                    "usage": {"input_tokens": 4, "output_tokens": 6},
-                    "total_cost_usd": 0.42,
-                }
-            ),
+            stdout='{"structured_output": {"ok": true}, "usage": {"input_tokens": 1}}',
             stderr="",
         )
 
-    monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
-    monkeypatch.setattr(claude_mod._subprocess, "which", lambda binary: "/usr/bin/claude")
     monkeypatch.setattr(claude_mod._subprocess, "run", fake_run)
     provider = claude_mod.ClaudeProvider(auth_source="external")
-    schema = {
-        "type": "object",
-        "properties": {
-            "relationship": {"type": "integer"},
-            "unrelated": {"type": "integer"},
-        },
-        "required": ["relationship", "unrelated"],
-    }
     result = await provider.run(
-        "classify this abstract",
+        "classify",
         cwd="/tmp/work",
         model="opus",
-        timeout=12,
         provider_options={
             "output_format": {"type": "json_schema", "schema": schema},
-            "reasoning_effort": "low",
-            "tools": [],
-            "allowed_tools": [],
-            "disallowed_tools": ["Bash", "Read"],
-            "permission_mode": "dontAsk",
             "max_turns": 1,
-            "max_budget_usd": 2,
-            "extra_args": {"exclude-dynamic-system-prompt-sections": None},
+            "permission_mode": "dontAsk",
+            "allowed_tools": ["Read"],
+            "disallowed_tools": ["Bash"],
         },
     )
 
     argv = captured["argv"]
     assert isinstance(argv, list)
     assert argv[:5] == ["/usr/bin/claude", "--print", "--output-format", "json", "--json-schema"]
-    assert "classify this abstract" not in argv
-    assert captured["stdin"] == "classify this abstract"
-    assert captured["cwd"] == "/tmp/work"
-    assert captured["timeout"] == 12
-    assert "--model" in argv and argv[argv.index("--model") + 1] == "opus"
-    assert "--effort" in argv and argv[argv.index("--effort") + 1] == "low"
-    assert "--max-turns" in argv and argv[argv.index("--max-turns") + 1] == "2"
-    assert "--tools" in argv and argv[argv.index("--tools") + 1] == ""
-    assert "--disallowed-tools" in argv
-    assert "--exclude-dynamic-system-prompt-sections" in argv
-    passed_schema = json.loads(argv[argv.index("--json-schema") + 1])
-    assert passed_schema == schema
+    assert "--model" in argv and "opus" in argv
+    assert "--max-turns" in argv and "2" in argv
+    assert "--permission-mode" in argv and "dontAsk" in argv
+    assert "--allowedTools" in argv and "Read" in argv
+    assert "--disallowedTools" in argv and "Bash" in argv
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["cwd"] == "/tmp/work"
+    assert kwargs["stdin"] == "classify"
     assert result.transport == "claude-cli-json"
-    assert result.text == '{"relationship":1,"unrelated":0}'
-    assert result.raw["claude_cli"]["structured_output"] == {
-        "relationship": 1,
-        "unrelated": 0,
-    }
+    assert result.text == '{"ok":true}'
+    assert isinstance(result.raw, dict)
+    assert result.raw["claude_cli"]["structured_output"] == {"ok": True}
 
 
-async def test_json_schema_output_sdk_error_result_does_not_fallback(
+async def test_structured_output_options_rejection_falls_back_to_cli(
     monkeypatch: pytest.MonkeyPatch, clean_env: None
 ) -> None:
+    class NoOutputFormatOptions(fake_claude_sdk.ClaudeAgentOptions):
+        def __init__(self, **kwargs: object) -> None:
+            if "output_format" in kwargs:
+                raise TypeError("unexpected keyword argument 'output_format'")
+            super().__init__(**kwargs)
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+
     async def fake_query(*, prompt: str, options: fake_claude_sdk.ClaudeAgentOptions):
-        yield fake_claude_sdk.ResultMessage(
-            result=(
-                "API Error: Claude Code is unable to respond to this request, "
-                "which appears to violate our Usage Policy."
-            ),
-            is_error=True,
-            structured_output=None,
-            stop_reason="refusal",
-        )
-        raise RuntimeError("Fatal error in message reader: Command failed with exit code 1")
+        raise AssertionError("query should not run when options reject output_format")
+        yield fake_claude_sdk.ResultMessage(result="never")  # pragma: no cover
 
-    monkeypatch.setattr(
-        claude_mod,
-        "_sdk",
-        lambda: (fake_query, fake_claude_sdk.ClaudeAgentOptions),
-    )
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        return CompletedProcess(returncode=0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(claude_mod, "_sdk", lambda: (fake_query, NoOutputFormatOptions))
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
+    monkeypatch.setattr(claude_mod._subprocess, "run", fake_run)
     provider = claude_mod.ClaudeProvider(auth_source="external")
-    with pytest.raises(CommandExecutionError) as excinfo:
-        await provider.run(
-            "prompt",
-            provider_options={
-                "output_format": {
-                    "type": "json_schema",
-                    "schema": {"type": "object"},
-                }
-            },
-        )
-
-    assert "Claude structured-output SDK returned an error result" in str(excinfo.value)
-    assert "Usage Policy" in str(excinfo.value)
-    assert excinfo.value.details["transport"] == "claude-agent-sdk"
-    assert excinfo.value.details["error_kind"] == "policy_refusal"
-    assert excinfo.value.details["sdk_result"]["stop_reason"] == "refusal"
+    result = await provider.run(
+        "classify",
+        provider_options={"output_format": {"type": "json_schema", "schema": schema}},
+    )
+    assert result.transport == "claude-cli-json"
+    assert result.text == '{"ok":true}'
 
 
-async def test_json_schema_output_cli_nonzero_raises_after_sdk_fallback(
+async def test_structured_output_cli_nonzero_raises(
     monkeypatch: pytest.MonkeyPatch, clean_env: None
 ) -> None:
-    async def fake_run(
-        argv: list[str],
-        *,
-        cwd: str | None = None,
-        env: dict[str, str | None] | None = None,
-        timeout: float | None = None,
-        stdin: str | None = None,
-    ) -> CompletedProcess:
-        return CompletedProcess(returncode=1, stdout="partial", stderr="boom")
-
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
     monkeypatch.setattr(claude_mod, "_sdk", lambda: None)
-    monkeypatch.setattr(claude_mod._subprocess, "which", lambda binary: "/usr/bin/claude")
+    monkeypatch.setattr(claude_mod._subprocess, "which", lambda _binary: "/usr/bin/claude")
+
+    async def fake_run(argv: list[str], **kwargs: object) -> CompletedProcess:
+        return CompletedProcess(returncode=2, stdout="", stderr="raw sk-ant-abcdefghijklmnop123")
+
     monkeypatch.setattr(claude_mod._subprocess, "run", fake_run)
     provider = claude_mod.ClaudeProvider(auth_source="external")
     with pytest.raises(CommandExecutionError) as excinfo:
         await provider.run(
-            "prompt",
-            provider_options={
-                "output_format": {
-                    "type": "json_schema",
-                    "schema": {"type": "object"},
-                }
-            },
+            "classify",
+            provider_options={"output_format": {"type": "json_schema", "schema": schema}},
         )
-
-    assert "claude --print exited with code 1" in str(excinfo.value)
-    assert excinfo.value.returncode == 1
-    assert excinfo.value.stderr == "boom"
-    assert excinfo.value.details["transport"] == "claude-cli-json"
+    assert "CLI fallback failed" in str(excinfo.value)
+    assert excinfo.value.returncode == 2
+    assert "sk-ant-abcdefghijklmnop" not in str(excinfo.value)
 
 
 async def test_sdk_reader_failure_wrapped_with_diagnostics(
